@@ -31,7 +31,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <BrowserRouter basename="/Contratos">
+        <BrowserRouter >
           <Routes>
             {/* Ruta pública */}
             <Route path="/login" element={<Login />} />

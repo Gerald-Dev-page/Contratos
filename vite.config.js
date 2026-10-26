@@ -8,5 +8,5 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
-  base: '/Contratos/', // Nombre exacto del repositorio en GitHub
+  base: '/', 
 })
