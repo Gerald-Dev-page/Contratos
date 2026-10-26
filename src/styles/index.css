@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+@theme {
+  /* Base UI Moderna - Tono Perla / Alabastro (No cansa la vista y luce moderno) */
+  --color-bg-egg: #F4F5F8;          /* Fondo general gris perla suave */
+  --color-bg-surface: #EAECEF;      /* Superficies secundarias, cabeceras de tablas y filtros */
+  --color-bg-card: #FAFBFD;         /* Tarjetas y contenedores (blanco humo suave, no encandila) */
+  --color-border-warm: #DDE1E8;     /* Bordes definidos y limpios */
+
+  /* Sidebar Dark Premium para dar contraste e identidad */
+  --color-sidebar-bg: #0F172A;      /* Azul noche profundo */
+  --color-sidebar-hover: #1E293B;   /* Hover en ítems del menú */
+  --color-sidebar-border: #1E293B;
+
+  /* Tipografía nítida */
+  --color-text-primary: #0F172A;    /* Azul pizarra casi negro */
+  --color-text-secondary: #475569;  /* Gris acero para subtítulos */
+  --color-text-muted: #94A3B8;      /* Etiquetas secundarias */
+
+  /* Color Principal con más onda (Índigo / Azul Real Vibrante) */
+  --color-brand-primary: #4F46E5;   /* Índigo moderno */
+  --color-brand-hover: #4338CA;     /* Índigo profundo al pasar el mouse */
+  --color-brand-light: #EEF2FF;     /* Fondo suave para elementos activos */
+
+  /* Estados Semánticos Vibrantes */
+  --color-status-ok: #059669;       /* Verde Esmeralda (Al día) */
+  --color-status-ok-bg: #D1FAE5;
+
+  --color-status-warn: #D97706;     /* Ámbar intenso (Pendiente del 1 al 10) */
+  --color-status-warn-bg: #FEF3C7;
+
+  --color-status-danger: #E11D48;   /* Rojo Carmesí moderno (En Mora +5%) */
+  --color-status-danger-bg: #FFE4E6;
+}
+
+@layer base {
+  html, body {
+    background-color: var(--color-bg-egg);
+    color: var(--color-text-primary);
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    padding: 0;
+  }
+
+  ::selection {
+    background-color: var(--color-brand-primary);
+    color: #FFFFFF;
+  }
+}
+
+@layer components {
+  /* Tarjetas con elevación sutil y borde limpio */
+  .card-ergonomica {
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border-warm);
+    border-radius: 0.875rem;
+    box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.04), 0 2px 4px -2px rgba(15, 23, 42, 0.02);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+
+  .card-ergonomica:hover {
+    border-color: #CBD5E1;
+    box-shadow: 0 8px 20px -4px rgba(15, 23, 42, 0.07);
+  }
+
+  /* Inputs modernos con foco en color Índigo */
+  .input-ergonomico {
+    width: 100%;
+    background-color: var(--color-bg-egg);
+    border: 1px solid var(--color-border-warm);
+    color: var(--color-text-primary);
+    border-radius: 0.625rem;
+    padding: 0.625rem 0.875rem;
+    font-size: 0.875rem;
+    transition: all 0.2s ease;
+  }
+
+  .input-ergonomico:focus {
+    outline: none;
+    background-color: var(--color-bg-card);
+    border-color: var(--color-brand-primary);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+  }
+
+  /* Botón Primario con gradiente sutil y sombra proyectada */
+  .btn-primario {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: linear-gradient(135deg, #4F46E5 0%, #3B82F6 100%);
+    color: #FFFFFF;
+    font-weight: 600;
+    font-size: 0.875rem;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.625rem;
+    box-shadow: 0 4px 10px -2px rgba(79, 70, 229, 0.35);
+    transition: all 0.2s ease;
+    cursor: pointer;
+  }
+
+  .btn-primario:hover {
+    background: linear-gradient(135deg, #4338CA 0%, #2563EB 100%);
+    box-shadow: 0 6px 14px -2px rgba(79, 70, 229, 0.45);
+    transform: translateY(-1px);
+  }
+
+  /* Botón de ícono (ej. Ojo para ver PDF) */
+  .btn-icono {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem;
+    border-radius: 0.5rem;
+    color: var(--color-text-secondary);
+    background-color: var(--color-bg-egg);
+    border: 1px solid var(--color-border-warm);
+    transition: all 0.15s ease;
+    cursor: pointer;
+  }
+
+  .btn-icono:hover {
+    background-color: var(--color-brand-light);
+    color: var(--color-brand-primary);
+    border-color: #C7D2FE;
+  }
+}
+
+/* Scrollbar estilizada */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-egg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
