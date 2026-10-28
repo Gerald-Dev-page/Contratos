@@ -46,13 +46,16 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
 setLoading(true);
 try {
-  // 1. Optimizar PDF en segundo plano sin alterar la UI
+  // Comprime o reempaqueta automáticamente sin tirar errores de límite
   const pdfListo = await optimizarPdf(archivoPdf);
   const nombreArchivo = `${Date.now()}_${pdfListo.name.replace(/\s+/g, '_')}`;
-  
+
   const { data: uploadData, error: uploadError } = await supabase.storage
     .from('contratos-pdf')
-    .upload(nombreArchivo, pdfListo);
+    .upload(nombreArchivo, pdfListo, {
+      contentType: 'application/pdf',
+      upsert: true
+    });
 
   if (uploadError) throw uploadError;
 

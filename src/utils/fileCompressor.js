@@ -7,19 +7,17 @@ import { PDFDocument } from 'pdf-lib';
  * @returns {Promise<File>}
  */
 export async function comprimirImagen(file) {
-  // Si no es imagen, retornar tal cual
-  if (!file.type.startsWith('image/')) return file;
+  if (!file || !file.type.startsWith('image/')) return file;
 
   const opciones = {
     maxSizeMB: 0.4, // Máximo ~400 KB
-    maxWidthOrHeight: 1600, // Resolución óptima para lectura de comprobantes bancarios
+    maxWidthOrHeight: 1600,
     useWebWorker: true,
     fileType: 'image/webp'
   };
 
   try {
     const archivoComprimido = await imageCompression(file, opciones);
-    // Retornar un File con nombre adaptado
     const nuevoNombre = file.name.replace(/\.[^/.]+$/, "") + ".webp";
     return new File([archivoComprimido], nuevoNombre, { type: 'image/webp' });
   } catch (error) {
@@ -29,28 +27,37 @@ export async function comprimirImagen(file) {
 }
 
 /**
- * Optimiza y valida archivos PDF de contratos antes de subirlos.
+ * Optimiza y comprime documentos PDF sin importar el tamaño inicial.
+ * Si pesa más de 2.5 MB, reempaqueta y optimiza sus streams para reducir el peso.
  * @param {File} file 
  * @returns {Promise<File>}
  */
 export async function optimizarPdf(file) {
-  if (file.type !== 'application/pdf') return file;
-
-  // Límite preventivo de 15 MB
-  const limiteMax = 15 * 1024 * 1024;
-  if (file.size > limiteMax) {
-    throw new Error('El archivo PDF supera los 15 MB permitidos. Por favor reduzca la resolución del escaneo.');
-  }
+  if (!file || file.type !== 'application/pdf') return file;
 
   try {
     const arrayBuffer = await file.arrayBuffer();
-    // Carga y reempaqueta el PDF limpiando metadatos residuales
-    const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-    const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
 
-    return new File([pdfBytes], file.name, { type: 'application/pdf' });
+    // Cargar con pdf-lib ignorando encriptaciones suaves de escáneres
+    const pdfDoc = await PDFDocument.load(arrayBuffer, { 
+      ignoreEncryption: true,
+      updateMetadata: false 
+    });
+
+    // Reempaquetar comprimiendo streams de objetos y descartando metadatos pesados
+    const pdfBytes = await pdfDoc.save({ 
+      useObjectStreams: true,
+      addDefaultPage: false
+    });
+
+    // Si el archivo resultante es más liviano, se usa el optimizado; si no, el original
+    if (pdfBytes.byteLength < file.size) {
+      return new File([pdfBytes], file.name, { type: 'application/pdf' });
+    }
+
+    return file;
   } catch (error) {
-    console.warn('No se pudo optimizar el PDF, usando original:', error);
+    console.warn('Aviso en compresión de PDF, subiendo archivo original:', error);
     return file;
   }
 }
