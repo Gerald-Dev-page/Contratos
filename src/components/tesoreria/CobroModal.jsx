@@ -5,6 +5,7 @@ import { liquidarCuota } from '../../utils/finance';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { registrarMovimiento } from '../../utils/logger';
+import { comprimirImagen } from '../../utils/fileCompressor';
 export default function CobroModal({ cuota, onClose, onPagoRegistrado }) {
   const { user } = useAuth();
   const { mostrarToast } = useToast();
@@ -39,41 +40,52 @@ export default function CobroModal({ cuota, onClose, onPagoRegistrado }) {
     ? liquidacion.subtotal
     : liquidacion.totalExigible;
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!comprobanteFile) {
-      mostrarToast('Debes adjuntar el comprobante emitido.', 'error');
-      return;
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  if (!comprobanteFile) {
+    mostrarToast('Debes adjuntar el comprobante emitido.', 'error');
+    return;
+  }
+
+  setLoading(true);
+  try {
+    // 1. Procesamiento y compresión en el cliente antes de subir
+    let archivoListo = comprobanteFile;
+
+    if (comprobanteFile.type.startsWith('image/')) {
+      archivoListo = await comprimirImagen(comprobanteFile);
+    } else if (comprobanteFile.type === 'application/pdf') {
+      archivoListo = await optimizarPdf(comprobanteFile);
     }
 
-    setLoading(true);
-    try {
-      const extension = comprobanteFile.name.split('.').pop();
-      const path = `comprobantes/${cuota.contratos?.numero_expediente}_cuota_${cuota.numero_cuota}_${Date.now()}.${extension}`;
+    // 2. Extraer la extensión del archivo ya procesado (si era imagen ahora es .webp)
+    const extension = archivoListo.name.split('.').pop();
+    const path = `comprobantes/${cuota.contratos?.numero_expediente}_cuota_${cuota.numero_cuota}_${Date.now()}.${extension}`;
 
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('comprobantes-pago')
-        .upload(path, comprobanteFile, { upsert: true });
+    // 3. Subir el archivo optimizado
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('comprobantes-pago')
+      .upload(path, archivoListo, { upsert: true });
 
-      if (uploadError) throw uploadError;
+    if (uploadError) throw uploadError;
 
-      const moraCobradaEfectiva = liquidacion.enMora && cobrarMoraAhora ? liquidacion.recargoMora : 0;
+    const moraCobradaEfectiva = liquidacion.enMora && cobrarMoraAhora ? liquidacion.recargoMora : 0;
 
-      // 1. Asentar el pago de capital
-      const { error: pagoError } = await supabase.from('pagos').insert([{
-        cuota_id: cuota.id,
-        fecha_pago: new Date().toISOString().split('T')[0],
-        monto_abonado: montoFinalCobro,
-        pago_fuera_termino: liquidacion.enMora,
-        interes_mora_cobrado: moraCobradaEfectiva,
-        metodo_pago: metodoPago,
-        comprobante_url: uploadData.path,
-        observaciones: observaciones.trim() + (!cobrarMoraAhora && liquidacion.enMora ? ' [Mora diferida]' : ''),
-        es_saldo_mora: false,
-        registrado_por: user.id
-      }]);
+    // 4. Asentar el pago de capital
+    const { error: pagoError } = await supabase.from('pagos').insert([{
+      cuota_id: cuota.id,
+      fecha_pago: new Date().toISOString().split('T')[0],
+      monto_abonado: montoFinalCobro,
+      pago_fuera_termino: liquidacion.enMora,
+      interes_mora_cobrado: moraCobradaEfectiva,
+      metodo_pago: metodoPago,
+      comprobante_url: uploadData.path,
+      observaciones: observaciones.trim() + (!cobrarMoraAhora && liquidacion.enMora ? ' [Mora diferida]' : ''),
+      es_saldo_mora: false,
+      registrado_por: user.id
+    }]);
 
-      if (pagoError) throw pagoError;
+    if (pagoError) throw pagoError;
 
       // 2. Marcar cuota como pagada
      const { error: cuotaError } = await supabase

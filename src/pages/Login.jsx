@@ -4,6 +4,7 @@ import { Mail, Lock, LogIn, AlertCircle, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import logoCaja from '../public/Logo-caja.png';
 import logoGerald from '../public/Logo-Gerald.png';
+
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -33,24 +34,18 @@ export default function Login() {
     }
   };
 
-  const setTestAccount = (userEmail, pass = 'Test-123') => {
-    setEmail(userEmail);
-    setPassword(pass);
-    setErrorMsg('');
-  };
-
   return (
     <div className="min-h-screen bg-[var(--color-bg-egg)] flex flex-col justify-between p-6">
       <div className="flex-1 flex items-center justify-center">
         <div className="card-ergonomica w-full max-w-md p-8 shadow-xl bg-white border border-[var(--color-border-warm)]">
           
-          {/* Encabezado con Logo */}
+          {/* Encabezado con Logo Caja */}
           <div className="flex flex-col items-center mb-6">
             <img
-  src={logoCaja}
-  alt="Caja Social"
-  className="h-12 w-auto object-contain mb-3"
-/>
+              src={logoCaja}
+              alt="Caja Social"
+              className="h-12 w-auto object-contain mb-3"
+            />
             <h1 className="text-lg font-bold text-[var(--color-text-primary)]">Caja Social</h1>
             <p className="text-xs text-[var(--color-text-secondary)]">Sistema de Gestión de Contratos y Cobranzas</p>
           </div>
@@ -115,40 +110,10 @@ export default function Login() {
               )}
             </button>
           </form>
-
-          {/* Atajos de acceso para Testing rápido */}
-          <div className="mt-6 pt-5 border-t border-[var(--color-border-warm)]">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-2 text-center">
-              Cuentas de Prueba
-            </span>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => setTestAccount('inmobiliario@test.com')}
-                className="btn-icono text-[11px] font-medium py-1.5"
-              >
-                Inmobiliaria
-              </button>
-              <button
-                type="button"
-                onClick={() => setTestAccount('tesoreria@test.com')}
-                className="btn-icono text-[11px] font-medium py-1.5"
-              >
-                Tesorería
-              </button>
-              <button
-                type="button"
-                onClick={() => setTestAccount('admin@test.com')}
-                className="btn-icono text-[11px] font-medium py-1.5"
-              >
-                Admin
-              </button>
-            </div>
-          </div>
         </div>
       </div>
 
-      {/* Footer de la página */}
+      {/* Footer institucional con Logo Gerald.Dev */}
       <div className="flex items-center justify-center gap-2 py-2">
         <span className="text-xs text-slate-400">Desarrollado para Caja Social por</span>
         <img src={logoGerald} alt="Gerald.Dev" className="h-4 w-auto opacity-70" />
