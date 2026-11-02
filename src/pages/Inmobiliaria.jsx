@@ -376,13 +376,25 @@ export default function Inmobiliaria() {
                         <span className="block text-xs font-normal text-slate-500">{c.cantidad_cuotas} cuotas</span>
                       </td>
 
-                      <td className="py-4 px-5 text-center">
-                        <BotonVerPdf
-                          filePath={c.contrato_pdf_url}
-                          bucket="contratos-pdf"
-                          titulo={`Contrato Exp. ${c.numero_expediente}`}
-                        />
-                      </td>
+                      <td className="py-4 px-5 text-center whitespace-nowrap">
+  <div className="flex items-center justify-center gap-1.5">
+    {/* Botón Documento 1 */}
+    <BotonVerPdf
+      filePath={c.contrato_pdf_url}
+      bucket="contratos-pdf"
+      titulo={`Doc 1 - Exp. ${c.numero_expediente}`}
+    />
+
+    {/* Botón Documento 2 (si existe) */}
+    {c.contrato_pdf_url_2 && (
+      <BotonVerPdf
+        filePath={c.contrato_pdf_url_2}
+        bucket="contratos-pdf"
+        titulo={`Doc 2 - Exp. ${c.numero_expediente}`}
+      />
+    )}
+  </div>
+</td>
 
                       <td className="py-4 px-5 text-center">
                         <div className="flex items-center justify-center gap-2">

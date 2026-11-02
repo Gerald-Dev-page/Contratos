@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Upload, FileText, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
+import { X, Upload, FileText, CheckCircle2, Loader2, Plus, Trash2 } from 'lucide-react';
 import { supabase } from '../../services/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
@@ -11,6 +11,9 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
   const { mostrarToast } = useToast();
 
   const [loading, setLoading] = useState(false);
+  const [tieneAnticipo, setTieneAnticipo] = useState(false);
+  const [habilitarSegundoPdf, setHabilitarSegundoPdf] = useState(false);
+
   const [formData, setFormData] = useState({
     numero_expediente: '',
     titular_nombre: '',
@@ -22,10 +25,13 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
     parcela: '',
     padron: '',
     monto_total: '',
+    monto_anticipo: '',
     cantidad_cuotas: '12',
     fecha_primer_vencimiento: new Date().toISOString().split('T')[0]
   });
-  const [archivoPdf, setArchivoPdf] = useState(null);
+
+  const [archivoPdf1, setArchivoPdf1] = useState(null);
+  const [archivoPdf2, setArchivoPdf2] = useState(null);
 
   if (!isOpen) return null;
 
@@ -33,109 +39,135 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const cuotaEstimada = formData.monto_total && formData.cantidad_cuotas && Number(formData.cantidad_cuotas) > 0
-    ? (Number(formData.monto_total) / Number(formData.cantidad_cuotas)).toLocaleString('es-AR', { maximumFractionDigits: 2 })
-    : '0';
+  const totalNum = Number(formData.monto_total) || 0;
+  const anticipoNum = tieneAnticipo ? (Number(formData.monto_anticipo) || 0) : 0;
+  const cantCuotasNum = Number(formData.cantidad_cuotas) || 1;
+
+  // Si tiene anticipo, la cuota 1 es el anticipo y las cuotas 2 a N se dividen sobre el resto
+  const cuotasRestantes = tieneAnticipo && cantCuotasNum > 1 ? cantCuotasNum - 1 : cantCuotasNum;
+  const saldoRestante = tieneAnticipo ? Math.max(0, totalNum - anticipoNum) : totalNum;
+  const valorCuotasRestantes = cuotasRestantes > 0 ? (saldoRestante / cuotasRestantes) : 0;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!archivoPdf) {
-      mostrarToast('Debe adjuntar el contrato en formato PDF.', 'error');
+    if (!archivoPdf1) {
+      mostrarToast('Debe adjuntar al menos el documento PDF principal.', 'error');
       return;
     }
 
-setLoading(true);
-try {
-  // Comprime o reempaqueta automáticamente sin tirar errores de límite
-  const pdfListo = await optimizarPdf(archivoPdf);
-  const nombreArchivo = `${Date.now()}_${pdfListo.name.replace(/\s+/g, '_')}`;
+    if (habilitarSegundoPdf && !archivoPdf2) {
+      mostrarToast('Seleccionó adjuntar un segundo documento pero no eligió ningún archivo.', 'error');
+      return;
+    }
 
-  const { data: uploadData, error: uploadError } = await supabase.storage
-    .from('contratos-pdf')
-    .upload(nombreArchivo, pdfListo, {
-      contentType: 'application/pdf',
-      upsert: true
-    });
+    if (tieneAnticipo && anticipoNum >= totalNum) {
+      mostrarToast('El anticipo no puede ser mayor o igual al monto total del lote.', 'error');
+      return;
+    }
 
-  if (uploadError) throw uploadError;
+    setLoading(true);
+    try {
+      // 1. Subir y optimizar PDF 1
+      const pdf1Listo = await optimizarPdf(archivoPdf1);
+      const nombreArchivo1 = `${Date.now()}_doc1_${pdf1Listo.name.replace(/\s+/g, '_')}`;
 
-  // 2. Insertar contrato (incluye sector y fecha_primer_vencimiento)
-  const totalNum = Number(formData.monto_total);
-  const cantCuotas = Number(formData.cantidad_cuotas);
+      const { data: uploadData1, error: uploadErr1 } = await supabase.storage
+        .from('contratos-pdf')
+        .upload(nombreArchivo1, pdf1Listo, { contentType: 'application/pdf', upsert: true });
 
-  const { data: nuevoContrato, error: contratoError } = await supabase
-    .from('contratos')
-    .insert({
-      numero_expediente: formData.numero_expediente.trim(),
-      titular_nombre: formData.titular_nombre.trim(),
-      titular_dni: formData.titular_dni.trim(),
-      titular_email: formData.titular_email.trim(),
-      titular_telefono: formData.titular_telefono.trim(),
-      sector: formData.sector.trim(),
-      manzana: formData.manzana.trim(),
-      parcela: formData.parcela.trim(),
-      padron: formData.padron.trim(),
-      monto_total: totalNum,
-      cantidad_cuotas: cantCuotas,
-      fecha_primer_vencimiento: formData.fecha_primer_vencimiento, // <- Guardado en BD
-      contrato_pdf_url: uploadData.path,
-      creado_por: user.id
-    })
-    .select()
-    .single();
+      if (uploadErr1) throw uploadErr1;
 
-  if (contratoError) throw contratoError;
+      // 2. Subir y optimizar PDF 2 si fue agregado
+      let pathPdf2 = null;
+      if (habilitarSegundoPdf && archivoPdf2) {
+        const pdf2Listo = await optimizarPdf(archivoPdf2);
+        const nombreArchivo2 = `${Date.now()}_doc2_${pdf2Listo.name.replace(/\s+/g, '_')}`;
 
-  // 3. Cronograma de cuotas con bloque_anual (1..12 = Bloque 1, 13..24 = Bloque 2, etc.)
-  const montoBaseCuota = totalNum / cantCuotas;
-  const cuotasParaInsertar = [];
+        const { data: uploadData2, error: uploadErr2 } = await supabase.storage
+          .from('contratos-pdf')
+          .upload(nombreArchivo2, pdf2Listo, { contentType: 'application/pdf', upsert: true });
 
-  // Parseo limpio de YYYY-MM-DD para evitar desfasajes horarios UTC
-  const [anioBase, mesBase, diaBase] = formData.fecha_primer_vencimiento.split('-').map(Number);
+        if (uploadErr2) throw uploadErr2;
+        pathPdf2 = uploadData2.path;
+      }
 
-  for (let i = 1; i <= cantCuotas; i++) {
-    // Mes base en JS va de 0 a 11. Sumamos (i - 1) meses.
-    const fechaCuota = new Date(anioBase, (mesBase - 1) + (i - 1), diaBase);
-    
-    const yyyy = fechaCuota.getFullYear();
-    const mm = String(fechaCuota.getMonth() + 1).padStart(2, '0');
-    const dd = String(fechaCuota.getDate()).padStart(2, '0');
-    
-    const periodoStr = `${yyyy}-${mm}`;
-    const fechaVencStr = `${yyyy}-${mm}-${dd}`;
-    const bloqueAnual = Math.ceil(i / 12);
+      // 3. Crear el contrato
+      const { data: nuevoContrato, error: contratoErr } = await supabase
+        .from('contratos')
+        .insert({
+          numero_expediente: formData.numero_expediente.trim(),
+          titular_nombre: formData.titular_nombre.trim(),
+          titular_dni: formData.titular_dni.trim(),
+          titular_email: formData.titular_email.trim(),
+          titular_telefono: formData.titular_telefono.trim(),
+          sector: formData.sector.trim(),
+          manzana: formData.manzana.trim(),
+          parcela: formData.parcela.trim(),
+          padron: formData.padron.trim(),
+          monto_total: totalNum,
+          monto_anticipo: anticipoNum,
+          anticipo_abonado: false, // Tesorería lo cobra
+          cantidad_cuotas: cantCuotasNum,
+          fecha_primer_vencimiento: formData.fecha_primer_vencimiento,
+          contrato_pdf_url: uploadData1.path,
+          contrato_pdf_url_2: pathPdf2,
+          creado_por: user.id
+        })
+        .select()
+        .single();
 
-    cuotasParaInsertar.push({
-      contrato_id: nuevoContrato.id,
-      numero_cuota: i,
-      bloque_anual: bloqueAnual, // <- Identificador del año de cuotas
-      periodo: periodoStr,
-      fecha_vencimiento: fechaVencStr,
-      monto_base: montoBaseCuota,
-      monto_ajuste_ipc: 0,
-      recargo_mora_porcentaje: 5,
-      monto_recargo_mora: 0,
-      monto_total_exigible: montoBaseCuota,
-      estado: 'pendiente',
-      mora_saldada: false,
-      aplica_ipc: i > 12
-    });
-  }
+      if (contratoErr) throw contratoErr;
 
-  const { error: cuotasError } = await supabase.from('cuotas').insert(cuotasParaInsertar);
-  if (cuotasError) throw cuotasError;
+      // 4. Cronograma de cuotas (Cuota 1 = Anticipo, Cuotas 2 a N = Saldo restante)
+      const cuotasParaInsertar = [];
+      const [anioBase, mesBase, diaBase] = formData.fecha_primer_vencimiento.split('-').map(Number);
 
-      // 4. Bitácora de Auditoría
+      for (let i = 1; i <= cantCuotasNum; i++) {
+        const fechaCuota = new Date(anioBase, (mesBase - 1) + (i - 1), diaBase);
+        const yyyy = fechaCuota.getFullYear();
+        const mm = String(fechaCuota.getMonth() + 1).padStart(2, '0');
+        const dd = String(fechaCuota.getDate()).padStart(2, '0');
+
+        // Determinación del monto base para cada cuota
+        let montoBase = valorCuotasRestantes;
+        let esCuotaAnticipo = false;
+
+        if (tieneAnticipo && i === 1) {
+          montoBase = anticipoNum;
+          esCuotaAnticipo = true;
+        }
+
+        cuotasParaInsertar.push({
+          contrato_id: nuevoContrato.id,
+          numero_cuota: i,
+          bloque_anual: Math.ceil(i / 12),
+          periodo: `${yyyy}-${mm}`,
+          fecha_vencimiento: `${yyyy}-${mm}-${dd}`,
+          monto_base: montoBase,
+          monto_ajuste_ipc: 0,
+          recargo_mora_porcentaje: 5,
+          monto_recargo_mora: 0,
+          monto_total_exigible: montoBase,
+          estado: 'pendiente', // Siempre pendiente para que Tesorería asiente el cobro
+          mora_saldada: false,
+          aplica_ipc: i > 12 && !esCuotaAnticipo
+        });
+      }
+
+      const { error: cuotasErr } = await supabase.from('cuotas').insert(cuotasParaInsertar);
+      if (cuotasErr) throw cuotasErr;
+
+      // 5. Auditoría
       await registrarMovimiento({
         usuario: user,
         modulo: 'INMOBILIARIA',
         accion: 'NUEVO_CONTRATO',
-        descripcion: `Alta de contrato Exp. ${nuevoContrato.numero_expediente} (${nuevoContrato.titular_nombre}) en ${nuevoContrato.sector}`,
+        descripcion: `Alta de contrato Exp. ${nuevoContrato.numero_expediente} (${nuevoContrato.titular_nombre}) en ${nuevoContrato.sector}. Total: $${totalNum.toLocaleString('es-AR')}${tieneAnticipo ? ` (Cuota 1 Anticipo: $${anticipoNum.toLocaleString('es-AR')})` : ''}`,
         expedienteId: nuevoContrato.id,
-        detalles: { sector: nuevoContrato.sector, total: totalNum, cuotas: cantCuotas }
+        detalles: { total: totalNum, anticipo: anticipoNum, cuotas: cantCuotasNum }
       });
 
-      mostrarToast('Contrato y cronograma registrados con éxito.');
+      mostrarToast('Contrato registrado. La Cuota 1 (Anticipo) quedó pendiente para cobro en Tesorería.');
       onContratoCreado();
       onClose();
     } catch (err) {
@@ -147,9 +179,9 @@ try {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4">
-      <div className="card-ergonomica w-full max-w-3xl max-h-[90vh] flex flex-col bg-white overflow-hidden shadow-2xl border border-[var(--color-border-warm)]">
+      <div className="card-ergonomica w-full max-w-3xl max-h-[92vh] flex flex-col bg-white overflow-hidden shadow-2xl border border-[var(--color-border-warm)]">
         
-        {/* Cabecera Clásica */}
+        {/* Cabecera */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border-warm)] bg-[var(--color-bg-surface)]">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-indigo-50 text-indigo-700">
@@ -157,7 +189,7 @@ try {
             </div>
             <div>
               <h3 className="font-bold text-base text-[var(--color-text-primary)]">Nuevo Contrato de Loteo</h3>
-              <p className="text-xs text-[var(--color-text-secondary)]">Complete los datos de la operación y adjunte el contrato firmado</p>
+              <p className="text-xs text-[var(--color-text-secondary)]">Complete los datos de la operación y adjunte los documentos firmados</p>
             </div>
           </div>
           <button 
@@ -187,11 +219,11 @@ try {
                   placeholder="EXP-2026-..."
                   value={formData.numero_expediente}
                   onChange={handleChange}
-                  className="input-ergonomico w-full text-xs"
+                  className="input-ergonomico w-full text-xs font-bold text-indigo-950"
                 />
               </div>
               <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre y Apellido Completo *</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre Completo *</label>
                 <input
                   type="text"
                   name="titular_nombre"
@@ -242,8 +274,8 @@ try {
             </div>
           </div>
 
-          {/* Bloque 2: Ubicación Catastral y Sector */}
-          <div className="space-y-3">
+          {/* Bloque 2: Ubicación Catastral */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
             <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
               2. Ubicación y Catastro
             </h4>
@@ -300,9 +332,24 @@ try {
 
           {/* Bloque 3: Condiciones Financieras */}
           <div className="space-y-3">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-              3. Condiciones Financieras del Lote
-            </h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                3. Condiciones Financieras y Plan de Pago
+              </h4>
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 hover:bg-indigo-100 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={tieneAnticipo}
+                  onChange={(e) => {
+                    setTieneAnticipo(e.target.checked);
+                    if (!e.target.checked) setFormData(prev => ({ ...prev, monto_anticipo: '' }));
+                  }}
+                  className="rounded text-indigo-600 cursor-pointer"
+                />
+                <span>¿Aplica entrega inicial / anticipo?</span>
+              </label>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Monto Total Contrato ($) *</label>
@@ -312,14 +359,35 @@ try {
                   required
                   min="1"
                   step="any"
-                  placeholder="Ej: 6000000"
+                  placeholder="Ej: 10000000"
                   value={formData.monto_total}
                   onChange={handleChange}
                   className="input-ergonomico w-full text-xs font-bold text-slate-900"
                 />
               </div>
+
+              {tieneAnticipo && (
+                <div>
+                  <label className="block text-xs font-semibold text-emerald-800 mb-1">
+                    Cuota 1: Anticipo ($) *
+                  </label>
+                  <input
+                    type="number"
+                    name="monto_anticipo"
+                    required={tieneAnticipo}
+                    min="1"
+                    max={totalNum ? totalNum - 1 : undefined}
+                    step="any"
+                    placeholder="Ej: 5000000"
+                    value={formData.monto_anticipo}
+                    onChange={handleChange}
+                    className="input-ergonomico w-full text-xs font-bold text-emerald-950 border-emerald-300 bg-emerald-50/40"
+                  />
+                </div>
+              )}
+
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Cantidad de Cuotas *</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Total de Cuotas del Plan *</label>
                 <input
                   type="number"
                   name="cantidad_cuotas"
@@ -331,8 +399,9 @@ try {
                   className="input-ergonomico w-full text-xs font-bold"
                 />
               </div>
+
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Primer Vencimiento *</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">1° Vencimiento (Anticipo) *</label>
                 <input
                   type="date"
                   name="fecha_primer_vencimiento"
@@ -344,54 +413,115 @@ try {
               </div>
             </div>
 
-            {/* Cuadro de resumen previo del plan */}
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-              <div className="text-slate-600">
-                <span>Valor cuota inicial estimada: </span>
-                <b className="text-slate-900 text-sm font-bold">${cuotaEstimada}</b>
-                <span className="text-slate-400 block sm:inline sm:ml-1">
-                  ({formData.cantidad_cuotas} cuotas mensuales)
-                </span>
-              </div>
-              {Number(formData.cantidad_cuotas) > 12 && (
-                <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded border border-indigo-100">
-                  Aplica IPC a partir de Cuota 13
-                </span>
+            {/* Esquema resultante */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
+              {tieneAnticipo && anticipoNum > 0 ? (
+                <>
+                  <p>
+                    • <b>Cuota 1 (Anticipo):</b> <span className="text-emerald-800 font-bold">${anticipoNum.toLocaleString('es-AR')}</span>{' '}
+                    <span className="text-slate-400 font-medium">(se cobra en Tesorería)</span>
+                  </p>
+                  <p>
+                    • <b>Cuotas 2 a {cantCuotasNum} ({cuotasRestantes} cuotas):</b>{' '}
+                    <span className="text-slate-900 font-bold">${valorCuotasRestantes.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span> c/u
+                    <span className="text-slate-400"> (Saldo restante: ${saldoRestante.toLocaleString('es-AR')})</span>
+                  </p>
+                </>
+              ) : (
+                <p>
+                  • <b>{formData.cantidad_cuotas} cuotas iguales de:</b>{' '}
+                  <span className="text-slate-900 font-bold">${valorCuotasRestantes.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>
+                </p>
               )}
             </div>
           </div>
 
-          {/* Bloque 4: Archivo Adjunto */}
-          <div className="space-y-2">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-              4. Documento Digitalizado
-            </h4>
-            <div className="border-2 border-dashed border-slate-300 rounded-xl p-5 text-center bg-slate-50/50 hover:bg-slate-50 transition-colors">
-              <input
-                type="file"
-                accept=".pdf"
-                required
-                id="file-pdf-original"
-                onChange={(e) => setArchivoPdf(e.target.files[0])}
-                className="hidden"
-              />
-              <label htmlFor="file-pdf-original" className="cursor-pointer flex flex-col items-center gap-2">
-                <div className="p-2.5 bg-white rounded-full shadow-2xs border border-slate-200 text-slate-600">
-                  <Upload size={20} />
-                </div>
-                <div>
-                  <span className="text-xs font-semibold text-indigo-600 hover:text-indigo-700">
-                    {archivoPdf ? archivoPdf.name : 'Haga clic para adjuntar el contrato (PDF)'}
-                  </span>
-                  <span className="block text-[11px] text-slate-400 mt-0.5">
-                    {archivoPdf 
-                      ? `${(archivoPdf.size / (1024 * 1024)).toFixed(2)} MB seleccionados`
-                      : 'Archivo digital escaneado con firmas'
-                    }
-                  </span>
-                </div>
-              </label>
+          {/* Bloque 4: Documentos Digitalizados (1 o 2 PDFs) */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                4. Documentos Digitalizados (PDF)
+              </h4>
+              
+              {!habilitarSegundoPdf ? (
+                <button
+                  type="button"
+                  onClick={() => setHabilitarSegundoPdf(true)}
+                  className="text-xs text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1 rounded font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus size={13} /> + Adjuntar Segundo Documento / Anexo
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHabilitarSegundoPdf(false);
+                    setArchivoPdf2(null);
+                  }}
+                  className="text-xs text-rose-600 hover:text-rose-800 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 size={13} /> Quitar segundo documento
+                </button>
+              )}
             </div>
+
+            {/* Documento 1 (Principal) */}
+            <div className="border border-slate-300 rounded-xl p-4 bg-slate-50/50">
+              <span className="block text-xs font-bold text-slate-700 mb-2">
+                Documento 1: Contrato Principal / Boleto *
+              </span>
+              <div className="flex items-center gap-3">
+                <input
+                  type="file"
+                  accept=".pdf"
+                  required
+                  id="file-pdf-doc1"
+                  onChange={(e) => setArchivoPdf1(e.target.files[0])}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="file-pdf-doc1"
+                  className="btn-icono py-2 px-3 border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold flex items-center gap-2 cursor-pointer rounded-lg shadow-2xs"
+                >
+                  <Upload size={14} /> {archivoPdf1 ? archivoPdf1.name : 'Seleccionar PDF 1'}
+                </label>
+                {archivoPdf1 && (
+                  <span className="text-xs text-emerald-700 flex items-center gap-1 font-medium">
+                    <CheckCircle2 size={13} /> Listo ({(archivoPdf1.size / (1024 * 1024)).toFixed(2)} MB)
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Documento 2 (Opcional) */}
+            {habilitarSegundoPdf && (
+              <div className="border border-indigo-200 bg-indigo-50/30 rounded-xl p-4 animate-fadeIn">
+                <span className="block text-xs font-bold text-indigo-950 mb-2">
+                  Documento 2: Anexo / Segundo Documento Firmado *
+                </span>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    required={habilitarSegundoPdf}
+                    id="file-pdf-doc2"
+                    onChange={(e) => setArchivoPdf2(e.target.files[0])}
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="file-pdf-doc2"
+                    className="btn-icono py-2 px-3 border border-indigo-300 bg-white hover:bg-indigo-50 text-xs font-semibold flex items-center gap-2 cursor-pointer rounded-lg shadow-2xs text-indigo-900"
+                  >
+                    <Upload size={14} /> {archivoPdf2 ? archivoPdf2.name : 'Seleccionar PDF 2'}
+                  </label>
+                  {archivoPdf2 && (
+                    <span className="text-xs text-emerald-700 flex items-center gap-1 font-medium">
+                      <CheckCircle2 size={13} /> Listo ({(archivoPdf2.size / (1024 * 1024)).toFixed(2)} MB)
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Acciones */}
@@ -400,17 +530,17 @@ try {
               type="button"
               onClick={onClose}
               disabled={loading}
-              className="btn-icono py-2 px-4 text-xs font-medium"
+              className="btn-icono py-2 px-4 text-xs font-medium cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
               disabled={loading}
-              className="btn-primario py-2 px-5 text-xs font-semibold flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-50"
+              className="btn-primario py-2.5 px-6 text-xs font-bold flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 shadow-md cursor-pointer disabled:opacity-50"
             >
-              {loading && <Loader2 size={15} className="animate-spin" />}
-              {loading ? 'Registrando Contrato...' : 'Crear Contrato'}
+              {loading && <Loader2 size={16} className="animate-spin" />}
+              {loading ? 'Comprimiendo y Guardando...' : 'Crear Contrato'}
             </button>
           </div>
         </form>

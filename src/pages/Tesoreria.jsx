@@ -171,20 +171,28 @@ export default function Tesoreria() {
                         </div>
                       </td>
 
-                      <td className="py-4 px-5">
-                        {proximaCuota ? (
-                          <div>
-                            <span className="font-semibold text-slate-800">
-                              Cuota #{proximaCuota.numero_cuota} ({proximaCuota.periodo})
-                            </span>
-                            <span className="block text-xs text-slate-500">
-                              Vence: {proximaCuota.fecha_vencimiento}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-emerald-700 font-semibold text-xs">Plan completado</span>
-                        )}
-                      </td>
+                     <td className="py-4 px-5">
+  {proximaCuota ? (
+    <div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="font-semibold text-slate-800">
+          Cuota #{proximaCuota.numero_cuota} ({proximaCuota.periodo})
+        </span>
+        {/* Badge distintivo si la cuota a cobrar es el anticipo */}
+        {proximaCuota.numero_cuota === 1 && Number(c.monto_anticipo || 0) > 0 && (
+          <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+            Anticipo / Entrega
+          </span>
+        )}
+      </div>
+      <span className="block text-xs text-slate-500 mt-0.5">
+        Vence: {proximaCuota.fecha_vencimiento}
+      </span>
+    </div>
+  ) : (
+    <span className="text-emerald-700 font-semibold text-xs">Plan completado</span>
+  )}
+</td>
 
                       <td className="py-4 px-5 font-semibold text-slate-900 whitespace-nowrap">
                         {proximaCuota ? (
