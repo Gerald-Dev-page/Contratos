@@ -1,10 +1,26 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Upload, FileText, CheckCircle2, Loader2, Plus, Trash2 } from 'lucide-react';
 import { supabase } from '../../services/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { registrarMovimiento } from '../../utils/logger';
-import { optimizarPdf } from '../../utils/fileCompressor';
+import { optimizarPdf, sanitizarNombreArchivo } from '../../utils/fileCompressor';
+
+const ESTADO_INICIAL_FORM = {
+  numero_expediente: '',
+  titular_nombre: '',
+  titular_dni: '',
+  titular_email: '',
+  titular_telefono: '',
+  sector: 'Sector A',
+  manzana: '',
+  parcela: '',
+  padron: '',
+  monto_total: '',
+  monto_anticipo: '',
+  cantidad_cuotas: '12',
+  fecha_primer_vencimiento: new Date().toISOString().split('T')[0]
+};
 
 export default function ContratoFormModal({ isOpen, onClose, onContratoCreado }) {
   const { user } = useAuth();
@@ -13,27 +29,36 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
   const [loading, setLoading] = useState(false);
   const [tieneAnticipo, setTieneAnticipo] = useState(false);
   const [habilitarSegundoPdf, setHabilitarSegundoPdf] = useState(false);
-
-  const [formData, setFormData] = useState({
-    numero_expediente: '',
-    titular_nombre: '',
-    titular_dni: '',
-    titular_email: '',
-    titular_telefono: '',
-    sector: 'Sector A',
-    manzana: '',
-    parcela: '',
-    padron: '',
-    monto_total: '',
-    monto_anticipo: '',
-    cantidad_cuotas: '12',
-    fecha_primer_vencimiento: new Date().toISOString().split('T')[0]
-  });
-
+  const [formData, setFormData] = useState(ESTADO_INICIAL_FORM);
   const [archivoPdf1, setArchivoPdf1] = useState(null);
   const [archivoPdf2, setArchivoPdf2] = useState(null);
 
+  // Función para resetear completamente el formulario
+  const limpiarFormulario = () => {
+    setFormData({
+      ...ESTADO_INICIAL_FORM,
+      fecha_primer_vencimiento: new Date().toISOString().split('T')[0]
+    });
+    setTieneAnticipo(false);
+    setHabilitarSegundoPdf(false);
+    setArchivoPdf1(null);
+    setArchivoPdf2(null);
+    setLoading(false);
+  };
+
+  // Cada vez que se abre el modal, blanquear los campos
+  useEffect(() => {
+    if (isOpen) {
+      limpiarFormulario();
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  const handleCerrar = () => {
+    limpiarFormulario();
+    onClose();
+  };
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -43,7 +68,6 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
   const anticipoNum = tieneAnticipo ? (Number(formData.monto_anticipo) || 0) : 0;
   const cantCuotasNum = Number(formData.cantidad_cuotas) || 1;
 
-  // Si tiene anticipo, la cuota 1 es el anticipo y las cuotas 2 a N se dividen sobre el resto
   const cuotasRestantes = tieneAnticipo && cantCuotasNum > 1 ? cantCuotasNum - 1 : cantCuotasNum;
   const saldoRestante = tieneAnticipo ? Math.max(0, totalNum - anticipoNum) : totalNum;
   const valorCuotasRestantes = cuotasRestantes > 0 ? (saldoRestante / cuotasRestantes) : 0;
@@ -67,9 +91,10 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
     setLoading(true);
     try {
-      // 1. Subir y optimizar PDF 1
+      // 1. Subir y optimizar PDF 1 con nombre saneado
       const pdf1Listo = await optimizarPdf(archivoPdf1);
-      const nombreArchivo1 = `${Date.now()}_doc1_${pdf1Listo.name.replace(/\s+/g, '_')}`;
+      const nombreSeguro1 = sanitizarNombreArchivo(pdf1Listo.name);
+      const nombreArchivo1 = `${Date.now()}_doc1_${nombreSeguro1}`;
 
       const { data: uploadData1, error: uploadErr1 } = await supabase.storage
         .from('contratos-pdf')
@@ -77,11 +102,12 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
       if (uploadErr1) throw uploadErr1;
 
-      // 2. Subir y optimizar PDF 2 si fue agregado
+      // 2. Subir y optimizar PDF 2 (si existe) con nombre saneado
       let pathPdf2 = null;
       if (habilitarSegundoPdf && archivoPdf2) {
         const pdf2Listo = await optimizarPdf(archivoPdf2);
-        const nombreArchivo2 = `${Date.now()}_doc2_${pdf2Listo.name.replace(/\s+/g, '_')}`;
+        const nombreSeguro2 = sanitizarNombreArchivo(pdf2Listo.name);
+        const nombreArchivo2 = `${Date.now()}_doc2_${nombreSeguro2}`;
 
         const { data: uploadData2, error: uploadErr2 } = await supabase.storage
           .from('contratos-pdf')
@@ -106,7 +132,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
           padron: formData.padron.trim(),
           monto_total: totalNum,
           monto_anticipo: anticipoNum,
-          anticipo_abonado: false, // Tesorería lo cobra
+          anticipo_abonado: false,
           cantidad_cuotas: cantCuotasNum,
           fecha_primer_vencimiento: formData.fecha_primer_vencimiento,
           contrato_pdf_url: uploadData1.path,
@@ -118,7 +144,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
       if (contratoErr) throw contratoErr;
 
-      // 4. Cronograma de cuotas (Cuota 1 = Anticipo, Cuotas 2 a N = Saldo restante)
+      // 4. Cronograma de cuotas
       const cuotasParaInsertar = [];
       const [anioBase, mesBase, diaBase] = formData.fecha_primer_vencimiento.split('-').map(Number);
 
@@ -128,7 +154,6 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
         const mm = String(fechaCuota.getMonth() + 1).padStart(2, '0');
         const dd = String(fechaCuota.getDate()).padStart(2, '0');
 
-        // Determinación del monto base para cada cuota
         let montoBase = valorCuotasRestantes;
         let esCuotaAnticipo = false;
 
@@ -148,7 +173,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
           recargo_mora_porcentaje: 5,
           monto_recargo_mora: 0,
           monto_total_exigible: montoBase,
-          estado: 'pendiente', // Siempre pendiente para que Tesorería asiente el cobro
+          estado: 'pendiente',
           mora_saldada: false,
           aplica_ipc: i > 12 && !esCuotaAnticipo
         });
@@ -167,7 +192,8 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
         detalles: { total: totalNum, anticipo: anticipoNum, cuotas: cantCuotasNum }
       });
 
-      mostrarToast('Contrato registrado. La Cuota 1 (Anticipo) quedó pendiente para cobro en Tesorería.');
+      mostrarToast('Contrato registrado con éxito.');
+      limpiarFormulario(); // Limpieza post-guardado
       onContratoCreado();
       onClose();
     } catch (err) {
@@ -194,8 +220,8 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
           </div>
           <button 
             type="button" 
-            onClick={onClose} 
-            className="btn-icono p-1.5 hover:bg-slate-100 rounded-lg text-slate-500"
+            onClick={handleCerrar} 
+            className="btn-icono p-1.5 hover:bg-slate-100 rounded-lg text-slate-500 cursor-pointer"
           >
             <X size={18} />
           </button>
@@ -413,7 +439,6 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
               </div>
             </div>
 
-            {/* Esquema resultante */}
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
               {tieneAnticipo && anticipoNum > 0 ? (
                 <>
@@ -436,7 +461,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
             </div>
           </div>
 
-          {/* Bloque 4: Documentos Digitalizados (1 o 2 PDFs) */}
+          {/* Bloque 4: Documentos Digitalizados */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
@@ -465,7 +490,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
               )}
             </div>
 
-            {/* Documento 1 (Principal) */}
+            {/* Documento 1 */}
             <div className="border border-slate-300 rounded-xl p-4 bg-slate-50/50">
               <span className="block text-xs font-bold text-slate-700 mb-2">
                 Documento 1: Contrato Principal / Boleto *
@@ -476,7 +501,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
                   accept=".pdf"
                   required
                   id="file-pdf-doc1"
-                  onChange={(e) => setArchivoPdf1(e.target.files[0])}
+                  onChange={(e) => setArchivoPdf1(e.target.files[0] || null)}
                   className="hidden"
                 />
                 <label
@@ -493,7 +518,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
               </div>
             </div>
 
-            {/* Documento 2 (Opcional) */}
+            {/* Documento 2 */}
             {habilitarSegundoPdf && (
               <div className="border border-indigo-200 bg-indigo-50/30 rounded-xl p-4 animate-fadeIn">
                 <span className="block text-xs font-bold text-indigo-950 mb-2">
@@ -505,7 +530,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
                     accept=".pdf"
                     required={habilitarSegundoPdf}
                     id="file-pdf-doc2"
-                    onChange={(e) => setArchivoPdf2(e.target.files[0])}
+                    onChange={(e) => setArchivoPdf2(e.target.files[0] || null)}
                     className="hidden"
                   />
                   <label
@@ -528,7 +553,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
           <div className="pt-4 border-t border-[var(--color-border-warm)] flex items-center justify-end gap-3">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCerrar}
               disabled={loading}
               className="btn-icono py-2 px-4 text-xs font-medium cursor-pointer"
             >

@@ -11,7 +11,8 @@ import {
   ChevronLeft,
   ChevronRight,
   TrendingUp,
-  CheckCircle2
+  CheckCircle2,
+  Filter
 } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -29,6 +30,7 @@ export default function Inmobiliaria() {
   const [contratos, setContratos] = useState([]);
   const [alertasMora, setAlertasMora] = useState([]);
   const [busqueda, setBusqueda] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState('todos'); // 'todos' | 'pendientes' | 'completados' | 'requiere_ipc'
   const [loading, setLoading] = useState(true);
   const [marcandoAvisoId, setMarcandoAvisoId] = useState(null);
 
@@ -77,10 +79,7 @@ export default function Inmobiliaria() {
   };
 
   /**
-   * Helper que evalúa el estado del IPC para un contrato según el progreso de sus cuotas:
-   * Revisa cada umbral de 12 cuotas (12, 24, 36, 48...).
-   * Si la cuota límite está pagada (o es la próxima exigible) y el bloque siguiente tiene IPC en 0:
-   * -> Requiere asignar IPC de forma urgente.
+   * Helper que evalúa el estado del IPC para un contrato según el progreso de sus cuotas
    */
   const evaluarEstadoIpc = (c) => {
     const totalCuotas = Number(c.cantidad_cuotas || 0);
@@ -88,21 +87,17 @@ export default function Inmobiliaria() {
 
     const cuotas = c.cuotas || [];
     const cuotasPagadas = cuotas.filter((q) => q.estado === 'pagada').length;
-
-    // Calculamos en qué bloque anual nos encontramos (Bloque 2 = cuotas 13-24, Bloque 3 = 25-36, etc.)
     const maxBloques = Math.ceil(totalCuotas / 12);
 
     for (let bloque = 2; bloque <= maxBloques; bloque++) {
-      const cuotaUmbral = (bloque - 1) * 12; // 12, 24, 36...
-      const cuotaInicioBloque = cuotaUmbral + 1; // 13, 25, 37...
+      const cuotaUmbral = (bloque - 1) * 12;
+      const cuotaInicioBloque = cuotaUmbral + 1;
       const cuotaFinBloque = Math.min(bloque * 12, totalCuotas);
 
-      // El aviso y botón se activan si ya se pagó la cuota umbral (o el contrato llegó a ese punto)
       if (cuotasPagadas >= cuotaUmbral) {
         const qInicio = cuotas.find((q) => q.numero_cuota === cuotaInicioBloque);
         const valorAjuste = qInicio ? Number(qInicio.monto_ajuste_ipc || 0) : 0;
 
-        // Si este bloque todavía no tiene IPC asignado, este es el que dispara la alerta
         if (valorAjuste === 0) {
           return {
             requiereIpc: true,
@@ -114,7 +109,6 @@ export default function Inmobiliaria() {
           };
         }
 
-        // Si ya tiene IPC asignado pero es el bloque actual en curso
         if (cuotasPagadas < cuotaFinBloque) {
           return {
             requiereIpc: false,
@@ -131,7 +125,17 @@ export default function Inmobiliaria() {
     return { requiereIpc: false, bloqueActivo: null, valorIpc: 0, yaAsignado: false };
   };
 
-  // Alertas dinámicas de IPC calculadas con el criterio de cuota 12 en adelante
+  /**
+   * Helper para verificar si un contrato completó todas sus cuotas
+   */
+  const esContratoCompletado = (c) => {
+    if (c.estado === 'completado') return true;
+    const cuotas = c.cuotas || [];
+    if (cuotas.length === 0) return false;
+    return cuotas.every((q) => q.estado === 'pagada');
+  };
+
+  // Alertas dinámicas de IPC
   const alertasIpc = useMemo(() => {
     const lista = [];
     contratos.forEach((c) => {
@@ -146,6 +150,28 @@ export default function Inmobiliaria() {
       }
     });
     return lista;
+  }, [contratos]);
+
+  // Contadores para pestañas de filtro
+  const conteoFiltros = useMemo(() => {
+    let pendientes = 0;
+    let completados = 0;
+    let requierenIpc = 0;
+
+    contratos.forEach((c) => {
+      const completado = esContratoCompletado(c);
+      if (completado) {
+        completados++;
+      } else {
+        pendientes++;
+      }
+
+      if (evaluarEstadoIpc(c).requiereIpc) {
+        requierenIpc++;
+      }
+    });
+
+    return { todos: contratos.length, pendientes, completados, requierenIpc };
   }, [contratos]);
 
   const handleMarcarComoAvisado = async (aviso) => {
@@ -182,14 +208,48 @@ export default function Inmobiliaria() {
     }
   };
 
+  /**
+   * Filtrado y Priorización:
+   * 1. Filtra por texto (búsqueda).
+   * 2. Filtra por pestaña de estado.
+   * 3. Ordena: Pendientes al inicio (prioridad) y Completados al fondo.
+   */
   const contratosFiltrados = useMemo(() => {
-    return contratos.filter((c) =>
-      c.titular_nombre?.toLowerCase().includes(busqueda.toLowerCase()) ||
-      c.numero_expediente?.toLowerCase().includes(busqueda.toLowerCase()) ||
-      c.titular_dni?.includes(busqueda) ||
-      c.padron?.toLowerCase().includes(busqueda.toLowerCase())
+    const query = busqueda.toLowerCase().trim();
+
+    // 1. Filtrar por término de búsqueda
+    let lista = contratos.filter((c) =>
+      c.titular_nombre?.toLowerCase().includes(query) ||
+      c.numero_expediente?.toLowerCase().includes(query) ||
+      c.titular_dni?.includes(query) ||
+      c.padron?.toLowerCase().includes(query) ||
+      c.sector?.toLowerCase().includes(query)
     );
-  }, [contratos, busqueda]);
+
+    // 2. Filtrar por estado seleccionado
+    if (filtroEstado === 'pendientes') {
+      lista = lista.filter((c) => !esContratoCompletado(c));
+    } else if (filtroEstado === 'completados') {
+      lista = lista.filter((c) => esContratoCompletado(c));
+    } else if (filtroEstado === 'requiere_ipc') {
+      lista = lista.filter((c) => evaluarEstadoIpc(c).requiereIpc);
+    }
+
+    // 3. Orden de prioridad: Pendientes primero (0), Completados al fondo (1)
+    return lista.sort((a, b) => {
+      const aCompletado = esContratoCompletado(a) ? 1 : 0;
+      const bCompletado = esContratoCompletado(b) ? 1 : 0;
+
+      if (aCompletado !== bCompletado) {
+        return aCompletado - bCompletado;
+      }
+
+      // Si ambos están en el mismo grupo, ordenar por fecha más reciente
+      const fechaA = new Date(a.created_at || a.fecha_carga || 0).getTime();
+      const fechaB = new Date(b.created_at || b.fecha_carga || 0).getTime();
+      return fechaB - fechaA;
+    });
+  }, [contratos, busqueda, filtroEstado]);
 
   const totalPaginas = Math.ceil(contratosFiltrados.length / elementosPorPagina) || 1;
   const contratosPaginados = useMemo(() => {
@@ -200,7 +260,7 @@ export default function Inmobiliaria() {
   return (
     <div className="p-8 w-full space-y-6">
       
-      {/* 1. Alertas de IPC: Solo se muestran si alcanzaron la cuota 12, 24, 36... y falta definir el valor */}
+      {/* 1. Alertas de IPC */}
       {alertasIpc.length > 0 && (
         <div className="w-full rounded-xl border border-indigo-200 bg-indigo-50/80 p-4 shadow-xs space-y-2.5">
           <div className="flex items-center gap-2 text-indigo-900 font-semibold text-xs uppercase tracking-wider">
@@ -308,19 +368,92 @@ export default function Inmobiliaria() {
         </button>
       </div>
 
-      {/* 4. Buscador */}
-      <div className="card-ergonomica p-4 flex items-center gap-3 bg-white border border-slate-200 w-full">
-        <Search size={18} className="text-slate-400 ml-1" />
-        <input
-          type="text"
-          placeholder="Buscar por Titular, Expediente, DNI o N° de Padrón..."
-          value={busqueda}
-          onChange={(e) => {
-            setBusqueda(e.target.value);
-            setPaginaActual(1);
-          }}
-          className="w-full bg-transparent text-sm text-[var(--color-text-primary)] outline-none"
-        />
+      {/* 4. Barra de Búsqueda y Filtros Rápidos */}
+      <div className="space-y-3">
+        <div className="card-ergonomica p-3.5 flex items-center gap-3 bg-white border border-slate-200 w-full">
+          <Search size={18} className="text-slate-400 ml-1" />
+          <input
+            type="text"
+            placeholder="Buscar por Titular, Expediente, DNI, Sector o N° de Padrón..."
+            value={busqueda}
+            onChange={(e) => {
+              setBusqueda(e.target.value);
+              setPaginaActual(1);
+            }}
+            className="w-full bg-transparent text-sm text-[var(--color-text-primary)] outline-none"
+          />
+        </div>
+
+        {/* Pestañas de Filtrado */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs font-semibold">
+          <button
+            onClick={() => { setFiltroEstado('todos'); setPaginaActual(1); }}
+            className={`px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+              filtroEstado === 'todos'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <span>Todos</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+              filtroEstado === 'todos' ? 'bg-indigo-800 text-indigo-100' : 'bg-slate-100 text-slate-600'
+            }`}>
+              {conteoFiltros.todos}
+            </span>
+          </button>
+
+          <button
+            onClick={() => { setFiltroEstado('pendientes'); setPaginaActual(1); }}
+            className={`px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+              filtroEstado === 'pendientes'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <span>Pendientes / Activos</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+              filtroEstado === 'pendientes' ? 'bg-amber-800 text-amber-100' : 'bg-slate-100 text-slate-600'
+            }`}>
+              {conteoFiltros.pendientes}
+            </span>
+          </button>
+
+          <button
+            onClick={() => { setFiltroEstado('completados'); setPaginaActual(1); }}
+            className={`px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+              filtroEstado === 'completados'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <CheckCircle2 size={13} />
+            <span>Completados</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+              filtroEstado === 'completados' ? 'bg-emerald-800 text-emerald-100' : 'bg-slate-100 text-slate-600'
+            }`}>
+              {conteoFiltros.completados}
+            </span>
+          </button>
+
+          {conteoFiltros.requierenIpc > 0 && (
+            <button
+              onClick={() => { setFiltroEstado('requiere_ipc'); setPaginaActual(1); }}
+              className={`px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+                filtroEstado === 'requiere_ipc'
+                  ? 'bg-indigo-700 text-white shadow-xs animate-pulse'
+                  : 'bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+              }`}
+            >
+              <TrendingUp size={13} />
+              <span>Requieren IPC</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                filtroEstado === 'requiere_ipc' ? 'bg-indigo-900 text-indigo-100' : 'bg-indigo-200 text-indigo-900'
+              }`}>
+                {conteoFiltros.requierenIpc}
+              </span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 5. Tabla de Contratos */}
@@ -328,7 +461,7 @@ export default function Inmobiliaria() {
         {loading ? (
           <div className="py-12 text-center text-sm text-slate-500">Cargando contratos...</div>
         ) : contratosPaginados.length === 0 ? (
-          <div className="py-12 text-center text-sm text-slate-500">No se encontraron contratos registrados.</div>
+          <div className="py-12 text-center text-sm text-slate-500">No se encontraron contratos con el criterio seleccionado.</div>
         ) : (
           <div className="overflow-x-auto w-full">
             <table className="w-full text-left text-sm">
@@ -337,7 +470,7 @@ export default function Inmobiliaria() {
                   <th className="py-3.5 px-5 font-semibold">Expediente</th>
                   <th className="py-3.5 px-5 font-semibold">Titular y DNI</th>
                   <th className="py-3.5 px-5 font-semibold">Sector y Terreno</th>
-                  <th className="py-3.5 px-5 font-semibold">Monto Total</th>
+                  <th className="py-3.5 px-5 font-semibold">Monto y Estado</th>
                   <th className="py-3.5 px-5 font-semibold text-center">Contrato PDF</th>
                   <th className="py-3.5 px-5 font-semibold text-center">Acciones</th>
                 </tr>
@@ -349,20 +482,38 @@ export default function Inmobiliaria() {
                     ? new Date(fechaAlta).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })
                     : '-';
 
-                  // Evaluación del estado del IPC para este contrato
+                  const cuotas = c.cuotas || [];
+                  const cuotasPagadas = cuotas.filter((q) => q.estado === 'pagada').length;
+                  const completado = esContratoCompletado(c);
                   const estadoIpc = evaluarEstadoIpc(c);
 
                   return (
-                    <tr key={c.id} className="hover:bg-slate-50 transition-colors">
+                    <tr 
+                      key={c.id} 
+                      className={`transition-colors ${
+                        completado 
+                          ? 'bg-slate-50/60 hover:bg-slate-100/60 text-slate-500' 
+                          : 'hover:bg-slate-50 text-slate-900'
+                      }`}
+                    >
                       <td className="py-4 px-5 whitespace-nowrap">
-                        <div className="font-semibold text-indigo-950">{c.numero_expediente}</div>
+                        <div className="font-semibold text-indigo-950 flex items-center gap-1.5">
+                          <span>{c.numero_expediente}</span>
+                          {completado && (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded">
+                              Saldado
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[11px] text-slate-400 font-mono block mt-0.5">
                           Alta: {fechaFormateada}
                         </span>
                       </td>
 
                       <td className="py-4 px-5">
-                        <div className="font-semibold text-slate-900">{c.titular_nombre}</div>
+                        <div className={`font-semibold ${completado ? 'text-slate-700' : 'text-slate-900'}`}>
+                          {c.titular_nombre}
+                        </div>
                         <span className="text-xs text-slate-500">DNI: {c.titular_dni}</span>
                       </td>
 
@@ -371,38 +522,52 @@ export default function Inmobiliaria() {
                         <span className="text-slate-400">Mz: {c.manzana} | Parc: {c.parcela}</span>
                       </td>
 
-                      <td className="py-4 px-5 font-semibold text-slate-900 whitespace-nowrap">
-                        ${Number(c.monto_total).toLocaleString('es-AR')}
-                        <span className="block text-xs font-normal text-slate-500">{c.cantidad_cuotas} cuotas</span>
+                      <td className="py-4 px-5 whitespace-nowrap">
+                        <div className="font-semibold text-slate-900">
+                          ${Number(c.monto_total).toLocaleString('es-AR')}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-slate-500">
+                            {cuotasPagadas} / {c.cantidad_cuotas} cuotas
+                          </span>
+                          {completado ? (
+                            <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                              <CheckCircle2 size={10} /> 100%
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded">
+                              {c.cantidad_cuotas - cuotasPagadas} pendientes
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="py-4 px-5 text-center whitespace-nowrap">
-  <div className="flex items-center justify-center gap-1.5">
-    {/* Botón Documento 1 */}
-    <BotonVerPdf
-      filePath={c.contrato_pdf_url}
-      bucket="contratos-pdf"
-      titulo={`Doc 1 - Exp. ${c.numero_expediente}`}
-    />
+                        <div className="flex items-center justify-center gap-1.5">
+                          {/* Botón Documento 1 */}
+                          <BotonVerPdf
+                            filePath={c.contrato_pdf_url}
+                            bucket="contratos-pdf"
+                            titulo={`Doc 1 - Exp. ${c.numero_expediente}`}
+                          />
 
-    {/* Botón Documento 2 (si existe) */}
-    {c.contrato_pdf_url_2 && (
-      <BotonVerPdf
-        filePath={c.contrato_pdf_url_2}
-        bucket="contratos-pdf"
-        titulo={`Doc 2 - Exp. ${c.numero_expediente}`}
-      />
-    )}
-  </div>
-</td>
+                          {/* Botón Documento 2 (si existe) */}
+                          {c.contrato_pdf_url_2 && (
+                            <BotonVerPdf
+                              filePath={c.contrato_pdf_url_2}
+                              bucket="contratos-pdf"
+                              titulo={`Doc 2 - Exp. ${c.numero_expediente}`}
+                            />
+                          )}
+                        </div>
+                      </td>
 
                       <td className="py-4 px-5 text-center">
                         <div className="flex items-center justify-center gap-2">
                           
-                          {/* Botón Dinámico de IPC según la regla de cuota 12+ */}
-                          {c.cantidad_cuotas > 12 && (
+                          {/* Botón Dinámico de IPC según la regla de cuota 12+ (solo si no está completado) */}
+                          {!completado && c.cantidad_cuotas > 12 && (
                             estadoIpc.requiereIpc ? (
-                              // Llegó a la cuota 12 (o 24, etc.) y aún no tiene valor asignado: Alerta Índigo
                               <button
                                 onClick={() => setAsignarIpcData({ contrato: c, bloque: estadoIpc.bloqueActivo })}
                                 className="py-1.5 px-2.5 text-xs flex items-center gap-1 text-white bg-indigo-600 hover:bg-indigo-700 font-bold rounded-lg transition-colors cursor-pointer shadow-xs animate-pulse"
@@ -412,7 +577,6 @@ export default function Inmobiliaria() {
                                 <span>Asignar IPC</span>
                               </button>
                             ) : estadoIpc.yaAsignado ? (
-                              // Ya fue asignado para el ciclo actual: Verde
                               <button
                                 onClick={() => setAsignarIpcData({ contrato: c, bloque: estadoIpc.bloqueActivo })}
                                 className="py-1.5 px-2.5 text-xs flex items-center gap-1.5 text-emerald-800 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 font-bold rounded-lg transition-colors cursor-pointer"
@@ -422,7 +586,6 @@ export default function Inmobiliaria() {
                                 <span>IPC Asignado</span>
                               </button>
                             ) : null
-                            // Si todavía va por la cuota 1 a 11, NO se muestra ningún botón ni alerta de IPC
                           )}
 
                           <button
