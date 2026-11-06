@@ -14,7 +14,9 @@ import Dashboard from "./pages/Dashboard";
 import Inmobiliaria from "./pages/Inmobiliaria";
 import Configuracion from "./pages/Configuracion";
 import Tesoreria from "./pages/Tesoreria";
-import HistorialMovimientos from './pages/HistorialMovimientos';
+import HistorialMovimientos from "./pages/HistorialMovimientos";
+import ContabilidadDashboard from "./pages/ContabilidadDashboard";
+
 // Layout principal: Sidebar fijo + área de contenido dinámico
 function AppLayout() {
   return (
@@ -31,7 +33,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <BrowserRouter >
+        <BrowserRouter>
           <Routes>
             {/* Ruta pública */}
             <Route path="/login" element={<Login />} />
@@ -51,7 +53,7 @@ export default function App() {
                   <Route path="/configuracion" element={<Configuracion />} />
                 </Route>
 
-                {/* Tesorería (desanidado y limpio) */}
+                {/* Tesorería */}
                 <Route
                   element={
                     <ProtectedRoute allowedRoles={["admin", "tesoreria"]} />
@@ -59,9 +61,20 @@ export default function App() {
                 >
                   <Route path="/tesoreria" element={<Tesoreria />} />
                 </Route>
+
+                {/* Control Contable (Exclusivo para admin y contable) */}
+                <Route
+                  element={
+                    <ProtectedRoute allowedRoles={["admin", "contable"]} />
+                  }
+                >
+                  <Route path="/contabilidad" element={<ContabilidadDashboard />} />
+                </Route>
+
+                {/* Auditoría (Solo Admin) */}
                 <Route element={<ProtectedRoute allowedRoles={["admin"]} />}>
-  <Route path="/auditoria" element={<HistorialMovimientos />} />
-</Route>
+                  <Route path="/auditoria" element={<HistorialMovimientos />} />
+                </Route>
               </Route>
             </Route>
 

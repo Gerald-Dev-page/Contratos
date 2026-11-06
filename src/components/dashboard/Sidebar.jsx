@@ -8,6 +8,7 @@ import {
   Settings,
   UserCircle,
   History as HistoryIcon,
+  Calculator,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
@@ -55,6 +56,14 @@ export default function Sidebar() {
             <NavLink to="/tesoreria" className={linkClass}>
               <CreditCard size={20} strokeWidth={1.8} />
               <span>Tesorería y Cobros</span>
+            </NavLink>
+          )}
+
+          {/* Acceso para Contabilidad y Administración */}
+          {(rol === "admin" || rol === "contable") && (
+            <NavLink to="/contabilidad" className={linkClass}>
+              <Calculator size={20} strokeWidth={1.8} />
+              <span>Control Contable</span>
             </NavLink>
           )}
 

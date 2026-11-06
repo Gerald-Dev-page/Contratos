@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
-import { X, DollarSign, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
+import { X, DollarSign, CheckCircle2, AlertTriangle, Loader2, Calendar } from 'lucide-react';
 import { supabase } from '../../services/supabase';
 import { liquidarCuota } from '../../utils/finance';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { registrarMovimiento } from '../../utils/logger';
-import { comprimirImagen } from '../../utils/fileCompressor';
+import { comprimirImagen, optimizarPdf, sanitizarNombreArchivo } from '../../utils/fileCompressor';
+
 export default function CobroModal({ cuota, onClose, onPagoRegistrado }) {
   const { user } = useAuth();
   const { mostrarToast } = useToast();
@@ -15,13 +16,29 @@ export default function CobroModal({ cuota, onClose, onPagoRegistrado }) {
   const [observaciones, setObservaciones] = useState('');
   const [cobrarMoraAhora, setCobrarMoraAhora] = useState(true);
 
-  // Liquidación considerando si la cuota ya tiene la mora saldada previamente
+  // Fecha real de la transferencia / comprobante
+  const [fechaPagoReal, setFechaPagoReal] = useState(new Date().toISOString().split('T')[0]);
+
+  // Liquidación considerando la fecha de acreditación real del comprobante
   const liquidacion = useMemo(() => {
-    if (!cuota) return { subtotal: 0, recargoMora: 0, totalExigible: 0, enMora: false };
+    if (!cuota) return { subtotal: 0, recargoMora: 0, totalExigible: 0, enMora: false, porcentajeMora: 0, montoIpc: 0 };
     
-    // Si la cuota ya tiene un subtotal calculado con IPC desde la vista de caja, lo usamos
     const ipc = cuota.monto_ipc_vigente || 0;
-    const res = liquidarCuota(cuota, new Date(), ipc);
+
+    // Evaluamos la mora contra la FECHA REAL del comprobante, no con el 'new Date()' de la computadora
+    const fechaAcreditacion = new Date(fechaPagoReal + 'T00:00:00');
+    const res = liquidarCuota(cuota, fechaAcreditacion, ipc);
+
+    // Si el contrato tiene desactivada la mora
+    if (cuota.contratos?.aplica_mora === false) {
+      return {
+        ...res,
+        recargoMora: 0,
+        totalExigible: res.subtotal,
+        enMora: false,
+        porcentajeMora: 0
+      };
+    }
 
     if (cuota.mora_saldada) {
       return {
@@ -32,7 +49,7 @@ export default function CobroModal({ cuota, onClose, onPagoRegistrado }) {
       };
     }
     return res;
-  }, [cuota]);
+  }, [cuota, fechaPagoReal]);
 
   if (!cuota) return null;
 
@@ -40,55 +57,75 @@ export default function CobroModal({ cuota, onClose, onPagoRegistrado }) {
     ? liquidacion.subtotal
     : liquidacion.totalExigible;
 
-const handleSubmit = async (e) => {
-  e.preventDefault();
-  if (!comprobanteFile) {
-    mostrarToast('Debes adjuntar el comprobante emitido.', 'error');
-    return;
-  }
+  // Verificamos si la fecha del comprobante condonó la mora
+  const fechaVencimientoObj = new Date(cuota.fecha_vencimiento + 'T23:59:59');
+  const fechaPagoObj = new Date(fechaPagoReal + 'T00:00:00');
+  const pagadoEnTerminoSegunComprobante = fechaPagoObj <= fechaVencimientoObj;
 
-  setLoading(true);
-  try {
-    // 1. Procesamiento y compresión en el cliente antes de subir
-    let archivoListo = comprobanteFile;
-
-    if (comprobanteFile.type.startsWith('image/')) {
-      archivoListo = await comprimirImagen(comprobanteFile);
-    } else if (comprobanteFile.type === 'application/pdf') {
-      archivoListo = await optimizarPdf(comprobanteFile);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!comprobanteFile && metodoPago !== 'Efectivo / Caja') {
+      mostrarToast('Debes adjuntar el comprobante emitido.', 'error');
+      return;
     }
 
-    // 2. Extraer la extensión del archivo ya procesado (si era imagen ahora es .webp)
-    const extension = archivoListo.name.split('.').pop();
-    const path = `comprobantes/${cuota.contratos?.numero_expediente}_cuota_${cuota.numero_cuota}_${Date.now()}.${extension}`;
+    setLoading(true);
+    try {
+      let uploadPath = null;
 
-    // 3. Subir el archivo optimizado
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('comprobantes-pago')
-      .upload(path, archivoListo, { upsert: true });
+      if (comprobanteFile) {
+        // 1. Procesamiento y compresión según tipo de archivo
+        let archivoListo = comprobanteFile;
+        if (comprobanteFile.type.startsWith('image/')) {
+          archivoListo = await comprimirImagen(comprobanteFile);
+        } else if (comprobanteFile.type === 'application/pdf') {
+          archivoListo = await optimizarPdf(comprobanteFile);
+        }
 
-    if (uploadError) throw uploadError;
+        // 2. Nombre saneado sin tildes ni símbolos raros
+        const extension = archivoListo.name.split('.').pop() || 'webp';
+        const numExp = sanitizarNombreArchivo(cuota.contratos?.numero_expediente || 'exp');
+        const nombreFinal = `cuota_${cuota.numero_cuota}_${Date.now()}.${extension}`;
+        const path = `comprobantes/${numExp}_${nombreFinal}`;
 
-    const moraCobradaEfectiva = liquidacion.enMora && cobrarMoraAhora ? liquidacion.recargoMora : 0;
+        // 3. Subida a storage
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('comprobantes-pagos')
+          .upload(path, archivoListo, { upsert: true });
 
-    // 4. Asentar el pago de capital
-    const { error: pagoError } = await supabase.from('pagos').insert([{
-      cuota_id: cuota.id,
-      fecha_pago: new Date().toISOString().split('T')[0],
-      monto_abonado: montoFinalCobro,
-      pago_fuera_termino: liquidacion.enMora,
-      interes_mora_cobrado: moraCobradaEfectiva,
-      metodo_pago: metodoPago,
-      comprobante_url: uploadData.path,
-      observaciones: observaciones.trim() + (!cobrarMoraAhora && liquidacion.enMora ? ' [Mora diferida]' : ''),
-      es_saldo_mora: false,
-      registrado_por: user.id
-    }]);
+        if (uploadError) {
+          // Si el bucket se llama sin la 's' final, hacemos fallback transparente
+          const { data: uploadData2, error: uploadError2 } = await supabase.storage
+            .from('comprobantes-pago')
+            .upload(path, archivoListo, { upsert: true });
+          
+          if (uploadError2) throw uploadError2;
+          uploadPath = uploadData2.path;
+        } else {
+          uploadPath = uploadData.path;
+        }
+      }
 
-    if (pagoError) throw pagoError;
+      const moraCobradaEfectiva = liquidacion.enMora && cobrarMoraAhora ? liquidacion.recargoMora : 0;
 
-      // 2. Marcar cuota como pagada
-     const { error: cuotaError } = await supabase
+      // 4. Asentar el pago
+      const { error: pagoError } = await supabase.from('pagos').insert([{
+        cuota_id: cuota.id,
+        fecha_pago: fechaPagoReal, // Guarda la fecha real del comprobante
+        monto_abonado: montoFinalCobro,
+        pago_fuera_termino: liquidacion.enMora,
+        interes_mora_cobrado: moraCobradaEfectiva,
+        metodo_pago: metodoPago,
+        comprobante_url: uploadPath,
+        observaciones: observaciones.trim() + (!cobrarMoraAhora && liquidacion.enMora ? ' [Mora diferida]' : ''),
+        es_saldo_mora: false,
+        registrado_por: user.id
+      }]);
+
+      if (pagoError) throw pagoError;
+
+      // 5. Marcar cuota como pagada
+      const { error: cuotaError } = await supabase
         .from('cuotas')
         .update({
           estado: 'pagada',
@@ -103,15 +140,15 @@ const handleSubmit = async (e) => {
 
       if (cuotaError) throw cuotaError;
 
-      // 3. REGISTRAR EN AUDITORÍA (Aquí va)
-     await registrarMovimiento({
-  usuario: user,
-  modulo: 'TESORERIA',
-  accion: 'COBRO_CUOTA',
-  descripcion: `Cobro de Cuota #${cuota.numero_cuota} ($${montoFinalCobro.toLocaleString('es-AR')}) del Exp. ${cuota.contratos?.numero_expediente}`,
-  expedienteId: cuota.contratos?.id,
-  detalles: { cuota_id: cuota.id, monto: montoFinalCobro, metodo: metodoPago }
-});
+      // 6. Auditoría
+      await registrarMovimiento({
+        usuario: user,
+        modulo: 'TESORERIA',
+        accion: 'COBRO_CUOTA',
+        descripcion: `Cobro de Cuota #${cuota.numero_cuota} ($${montoFinalCobro.toLocaleString('es-AR')}) del Exp. ${cuota.contratos?.numero_expediente} con fecha de acreditación ${fechaPagoReal}`,
+        expedienteId: cuota.contratos?.id,
+        detalles: { cuota_id: cuota.id, monto: montoFinalCobro, metodo: metodoPago, fecha_pago: fechaPagoReal }
+      });
 
       mostrarToast(`Pago de Cuota #${cuota.numero_cuota} registrado con éxito.`);
       onPagoRegistrado();
@@ -123,7 +160,6 @@ const handleSubmit = async (e) => {
     }
   };
 
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4">
       <div className="card-ergonomica w-full max-w-lg bg-white overflow-hidden shadow-2xl">
@@ -134,13 +170,37 @@ const handleSubmit = async (e) => {
               Exp: {cuota.contratos?.numero_expediente} • Cuota #{cuota.numero_cuota}
             </p>
           </div>
-          <button onClick={onClose} className="btn-icono text-xs">
+          <button onClick={onClose} className="btn-icono text-xs cursor-pointer">
             <X size={16} />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {/* Si ya saldó la mora previamente */}
+          
+          {/* Fecha del Comprobante */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+              <Calendar size={13} className="text-indigo-600" /> Fecha del Comprobante / Acreditación *
+            </label>
+            <input
+              type="date"
+              required
+              value={fechaPagoReal}
+              onChange={(e) => setFechaPagoReal(e.target.value)}
+              className="input-ergonomico w-full text-xs font-bold text-indigo-950 bg-indigo-50/30"
+            />
+            {pagadoEnTerminoSegunComprobante ? (
+              <p className="text-[11px] text-emerald-700 font-medium mt-1">
+                ✓ Comprobante dentro del término de vencimiento ({cuota.fecha_vencimiento}). No computa mora.
+              </p>
+            ) : (
+              <p className="text-[11px] text-rose-600 font-medium mt-1">
+                ⚠ Fecha posterior al vencimiento ({cuota.fecha_vencimiento}). Computa recargo de mora.
+              </p>
+            )}
+          </div>
+
+          {/* Estado de mora saldada previa */}
           {cuota.mora_saldada && (
             <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
               <CheckCircle2 size={15} className="shrink-0" />
@@ -148,6 +208,7 @@ const handleSubmit = async (e) => {
             </div>
           )}
 
+          {/* Alerta de Mora si aplica */}
           {liquidacion.enMora && !cuota.mora_saldada && (
             <div className="p-3 rounded-lg bg-[var(--color-status-danger-bg)] border border-rose-200 text-xs text-[var(--color-status-danger)] space-y-2">
               <div className="flex items-center gap-2 font-semibold">
@@ -169,11 +230,18 @@ const handleSubmit = async (e) => {
             </div>
           )}
 
+          {/* Desglose de Valores */}
           <div className="p-4 rounded-lg bg-[var(--color-bg-egg)] border border-[var(--color-border-warm)] text-xs space-y-2">
             <div className="flex justify-between text-slate-600">
               <span>Monto Base Cuota:</span>
               <span className="font-semibold">${Number(cuota.monto_base).toLocaleString('es-AR')}</span>
             </div>
+            {liquidacion.montoIpc > 0 && (
+              <div className="flex justify-between text-slate-600">
+                <span>Ajuste IPC:</span>
+                <span className="font-semibold text-indigo-900">+${liquidacion.montoIpc.toLocaleString('es-AR')}</span>
+              </div>
+            )}
             {liquidacion.enMora && cobrarMoraAhora && !cuota.mora_saldada && (
               <div className="flex justify-between text-rose-600 font-semibold">
                 <span>Interés de Mora:</span>
@@ -189,7 +257,7 @@ const handleSubmit = async (e) => {
           <div className="space-y-3">
             <div>
               <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Medio de Pago</label>
-              <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className="input-ergonomico text-xs">
+              <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className="input-ergonomico text-xs w-full">
                 <option value="Transferencia Bancaria">Transferencia Bancaria</option>
                 <option value="Depósito en Cuenta">Depósito en Cuenta</option>
                 <option value="Efectivo / Caja">Efectivo / Caja</option>
@@ -197,13 +265,15 @@ const handleSubmit = async (e) => {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Comprobante de Caja</label>
+              <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">
+                Comprobante de Caja {metodoPago !== 'Efectivo / Caja' && '*'}
+              </label>
               <input
-                required
+                required={metodoPago !== 'Efectivo / Caja'}
                 type="file"
                 accept="image/*,application/pdf"
-                className="text-xs file:mr-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-indigo-50 file:text-indigo-700 file:font-semibold hover:file:bg-indigo-100 cursor-pointer"
-                onChange={(e) => setComprobanteFile(e.target.files[0])}
+                className="text-xs file:mr-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-indigo-50 file:text-indigo-700 file:font-semibold hover:file:bg-indigo-100 cursor-pointer w-full"
+                onChange={(e) => setComprobanteFile(e.target.files[0] || null)}
               />
             </div>
 
@@ -214,14 +284,16 @@ const handleSubmit = async (e) => {
                 placeholder="Referencia de pago o nota..."
                 value={observaciones}
                 onChange={(e) => setObservaciones(e.target.value)}
-                className="input-ergonomico text-xs"
+                className="input-ergonomico text-xs w-full"
               />
             </div>
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-[var(--color-border-warm)]">
-            <button type="button" onClick={onClose} className="btn-icono px-4 text-xs font-medium">Cancelar</button>
-            <button type="submit" disabled={loading} className="btn-primario text-xs">
+            <button type="button" onClick={onClose} className="btn-icono px-4 text-xs font-medium cursor-pointer">
+              Cancelar
+            </button>
+            <button type="submit" disabled={loading} className="btn-primario text-xs cursor-pointer">
               {loading ? <Loader2 size={14} className="animate-spin" /> : <DollarSign size={14} />} Confirmar Cobro
             </button>
           </div>

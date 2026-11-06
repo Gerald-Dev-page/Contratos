@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Upload, FileText, CheckCircle2, Loader2, Plus, Trash2 } from 'lucide-react';
+import { X, Upload, FileText, CheckCircle2, Loader2, Plus, Trash2, ShieldAlert } from 'lucide-react';
 import { supabase } from '../../services/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
@@ -28,25 +28,25 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
   const [loading, setLoading] = useState(false);
   const [tieneAnticipo, setTieneAnticipo] = useState(false);
+  const [aplicaMora, setAplicaMora] = useState(true); // Activo por defecto
   const [habilitarSegundoPdf, setHabilitarSegundoPdf] = useState(false);
   const [formData, setFormData] = useState(ESTADO_INICIAL_FORM);
   const [archivoPdf1, setArchivoPdf1] = useState(null);
   const [archivoPdf2, setArchivoPdf2] = useState(null);
 
-  // Función para resetear completamente el formulario
   const limpiarFormulario = () => {
     setFormData({
       ...ESTADO_INICIAL_FORM,
       fecha_primer_vencimiento: new Date().toISOString().split('T')[0]
     });
     setTieneAnticipo(false);
+    setAplicaMora(true);
     setHabilitarSegundoPdf(false);
     setArchivoPdf1(null);
     setArchivoPdf2(null);
     setLoading(false);
   };
 
-  // Cada vez que se abre el modal, blanquear los campos
   useEffect(() => {
     if (isOpen) {
       limpiarFormulario();
@@ -91,7 +91,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
     setLoading(true);
     try {
-      // 1. Subir y optimizar PDF 1 con nombre saneado
+      // 1. Subir PDF 1
       const pdf1Listo = await optimizarPdf(archivoPdf1);
       const nombreSeguro1 = sanitizarNombreArchivo(pdf1Listo.name);
       const nombreArchivo1 = `${Date.now()}_doc1_${nombreSeguro1}`;
@@ -102,7 +102,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
       if (uploadErr1) throw uploadErr1;
 
-      // 2. Subir y optimizar PDF 2 (si existe) con nombre saneado
+      // 2. Subir PDF 2 (opcional)
       let pathPdf2 = null;
       if (habilitarSegundoPdf && archivoPdf2) {
         const pdf2Listo = await optimizarPdf(archivoPdf2);
@@ -133,6 +133,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
           monto_total: totalNum,
           monto_anticipo: anticipoNum,
           anticipo_abonado: false,
+          aplica_mora: aplicaMora,
           cantidad_cuotas: cantCuotasNum,
           fecha_primer_vencimiento: formData.fecha_primer_vencimiento,
           contrato_pdf_url: uploadData1.path,
@@ -144,7 +145,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
 
       if (contratoErr) throw contratoErr;
 
-      // 4. Cronograma de cuotas
+      // 4. Cronograma de cuotas (Cuota 1 = Anticipo si existe; Mora según switch)
       const cuotasParaInsertar = [];
       const [anioBase, mesBase, diaBase] = formData.fecha_primer_vencimiento.split('-').map(Number);
 
@@ -170,7 +171,7 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
           fecha_vencimiento: `${yyyy}-${mm}-${dd}`,
           monto_base: montoBase,
           monto_ajuste_ipc: 0,
-          recargo_mora_porcentaje: 5,
+          recargo_mora_porcentaje: aplicaMora ? 5 : 0,
           monto_recargo_mora: 0,
           monto_total_exigible: montoBase,
           estado: 'pendiente',
@@ -187,13 +188,13 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
         usuario: user,
         modulo: 'INMOBILIARIA',
         accion: 'NUEVO_CONTRATO',
-        descripcion: `Alta de contrato Exp. ${nuevoContrato.numero_expediente} (${nuevoContrato.titular_nombre}) en ${nuevoContrato.sector}. Total: $${totalNum.toLocaleString('es-AR')}${tieneAnticipo ? ` (Cuota 1 Anticipo: $${anticipoNum.toLocaleString('es-AR')})` : ''}`,
+        descripcion: `Alta de contrato Exp. ${nuevoContrato.numero_expediente} (${nuevoContrato.titular_nombre}) en ${nuevoContrato.sector}. Total: $${totalNum.toLocaleString('es-AR')}. Mora: ${aplicaMora ? 'Activada (5%)' : 'Sin Mora'}.`,
         expedienteId: nuevoContrato.id,
-        detalles: { total: totalNum, anticipo: anticipoNum, cuotas: cantCuotasNum }
+        detalles: { total: totalNum, anticipo: anticipoNum, cuotas: cantCuotasNum, aplicaMora }
       });
 
       mostrarToast('Contrato registrado con éxito.');
-      limpiarFormulario(); // Limpieza post-guardado
+      limpiarFormulario();
       onContratoCreado();
       onClose();
     } catch (err) {
@@ -356,24 +357,42 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
             </div>
           </div>
 
-          {/* Bloque 3: Condiciones Financieras */}
+          {/* Bloque 3: Condiciones Financieras, Anticipo y Mora */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                 3. Condiciones Financieras y Plan de Pago
               </h4>
-              <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 hover:bg-indigo-100 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={tieneAnticipo}
-                  onChange={(e) => {
-                    setTieneAnticipo(e.target.checked);
-                    if (!e.target.checked) setFormData(prev => ({ ...prev, monto_anticipo: '' }));
-                  }}
-                  className="rounded text-indigo-600 cursor-pointer"
-                />
-                <span>¿Aplica entrega inicial / anticipo?</span>
-              </label>
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 hover:bg-indigo-100 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={tieneAnticipo}
+                    onChange={(e) => {
+                      setTieneAnticipo(e.target.checked);
+                      if (!e.target.checked) setFormData(prev => ({ ...prev, monto_anticipo: '' }));
+                    }}
+                    className="rounded text-indigo-600 cursor-pointer"
+                  />
+                  <span>¿Aplica anticipo?</span>
+                </label>
+
+                {/* Switch de Mora */}
+                <label className={`flex items-center gap-1.5 cursor-pointer text-xs font-semibold px-2.5 py-1 rounded-md border transition-colors ${
+                  aplicaMora 
+                    ? 'text-amber-900 bg-amber-50 border-amber-300' 
+                    : 'text-slate-500 bg-slate-100 border-slate-200'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={aplicaMora}
+                    onChange={(e) => setAplicaMora(e.target.checked)}
+                    className="rounded text-amber-600 cursor-pointer"
+                  />
+                  <ShieldAlert size={13} />
+                  <span>{aplicaMora ? 'Con Mora (5%)' : 'Sin Mora (0%)'}</span>
+                </label>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -458,6 +477,9 @@ export default function ContratoFormModal({ isOpen, onClose, onContratoCreado })
                   <span className="text-slate-900 font-bold">${valorCuotasRestantes.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>
                 </p>
               )}
+              <p className="text-[11px] text-slate-400">
+                • Política de mora: <b className={aplicaMora ? 'text-amber-800' : 'text-slate-600'}>{aplicaMora ? 'Aplica 5% mensual por mora' : 'Exento de recargo de mora'}</b>
+              </p>
             </div>
           </div>
 

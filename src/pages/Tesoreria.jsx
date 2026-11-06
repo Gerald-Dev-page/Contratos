@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Search, ChevronLeft, ChevronRight, UserCheck, AlertTriangle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, UserCheck, AlertTriangle, Filter } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import TesoreriaAlertas from '../components/tesoreria/TesoreriaAlertas';
 import ContratoCajaModal from '../components/tesoreria/ContratoCajaModal';
@@ -7,6 +7,8 @@ import ContratoCajaModal from '../components/tesoreria/ContratoCajaModal';
 export default function Tesoreria() {
   const [contratos, setContratos] = useState([]);
   const [busqueda, setBusqueda] = useState('');
+  const [filtroSector, setFiltroSector] = useState('todos');
+  const [filtroEstado, setFiltroEstado] = useState('todos'); // 'todos' | 'mora' | 'al_dia' | 'completado'
   const [loading, setLoading] = useState(true);
   const [contratoSeleccionado, setContratoSeleccionado] = useState(null);
 
@@ -45,7 +47,7 @@ export default function Tesoreria() {
             )
           )
         `)
-        .order('created_at', { ascending: false }); // Nuevo contrato primero
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
       setContratos(data || []);
@@ -65,23 +67,67 @@ export default function Tesoreria() {
     cargarDatos();
   }, []);
 
+  // Lista dinámica de sectores disponibles
+  const sectores = useMemo(() => {
+    const set = new Set();
+    contratos.forEach(c => {
+      if (c.sector) set.add(c.sector.trim());
+    });
+    return Array.from(set).sort();
+  }, [contratos]);
+
+  const hoy = new Date();
+  const diaActual = hoy.getDate();
+
   const contratosFiltrados = useMemo(() => {
-    return contratos.filter((c) =>
-      c.numero_expediente?.toLowerCase().includes(busqueda.toLowerCase()) ||
-      c.titular_nombre?.toLowerCase().includes(busqueda.toLowerCase()) ||
-      c.titular_dni?.includes(busqueda) ||
-      c.padron?.toLowerCase().includes(busqueda.toLowerCase())
-    );
-  }, [contratos, busqueda]);
+    const q = busqueda.toLowerCase().trim();
+
+    return contratos.filter((c) => {
+      // 1. Filtro de búsqueda textual
+      const coincideTexto = 
+        c.numero_expediente?.toLowerCase().includes(q) ||
+        c.titular_nombre?.toLowerCase().includes(q) ||
+        c.titular_dni?.includes(q) ||
+        c.padron?.toLowerCase().includes(q) ||
+        c.sector?.toLowerCase().includes(q);
+
+      // 2. Filtro de Sector
+      const coincideSector = 
+        filtroSector === 'todos' || 
+        (c.sector && c.sector.trim().toLowerCase() === filtroSector.toLowerCase());
+
+      // 3. Filtro de Estado de cuotas
+      const cuotas = c.cuotas || [];
+      const proximaCuota = cuotas
+        .filter((cu) => cu.estado === 'pendiente')
+        .sort((a, b) => a.numero_cuota - b.numero_cuota)[0];
+
+      const estaCompletado = cuotas.length > 0 && cuotas.every(cu => cu.estado === 'pagada');
+      
+      let estaEnMora = false;
+      if (proximaCuota) {
+        const fVenc = new Date(proximaCuota.fecha_vencimiento);
+        estaEnMora = hoy > fVenc || (
+          hoy.getMonth() === fVenc.getMonth() &&
+          hoy.getFullYear() === fVenc.getFullYear() &&
+          diaActual > 10
+        );
+      }
+
+      let coincideEstado = true;
+      if (filtroEstado === 'mora') coincideEstado = estaEnMora && !estaCompletado;
+      if (filtroEstado === 'al_dia') coincideEstado = !estaEnMora && !estaCompletado;
+      if (filtroEstado === 'completado') coincideEstado = estaCompletado;
+
+      return coincideTexto && coincideSector && coincideEstado;
+    });
+  }, [contratos, busqueda, filtroSector, filtroEstado]);
 
   const totalPaginas = Math.ceil(contratosFiltrados.length / elementosPorPagina) || 1;
   const contratosPaginados = useMemo(() => {
     const inicio = (paginaActual - 1) * elementosPorPagina;
     return contratosFiltrados.slice(inicio, inicio + elementosPorPagina);
   }, [contratosFiltrados, paginaActual]);
-
-  const hoy = new Date();
-  const diaActual = hoy.getDate();
 
   return (
     <div className="p-8 w-full space-y-6">
@@ -99,19 +145,58 @@ export default function Tesoreria() {
         onSeleccionarContrato={(c) => setContratoSeleccionado(c)}
       />
 
-      {/* Buscador */}
-      <div className="card-ergonomica p-4 flex items-center gap-3 bg-white border border-slate-200 w-full">
-        <Search size={18} className="text-slate-400 ml-1" />
-        <input
-          type="text"
-          placeholder="Buscar titular por nombre, DNI, expediente o padrón..."
-          value={busqueda}
-          onChange={(e) => {
-            setBusqueda(e.target.value);
-            setPaginaActual(1);
-          }}
-          className="w-full bg-transparent text-sm text-[var(--color-text-primary)] outline-none"
-        />
+      {/* Barra de Filtros y Búsqueda */}
+      <div className="flex flex-col md:flex-row gap-3 items-center w-full">
+        <div className="card-ergonomica p-3.5 flex items-center gap-3 bg-white border border-slate-200 flex-1 w-full">
+          <Search size={18} className="text-slate-400 ml-1" />
+          <input
+            type="text"
+            placeholder="Buscar por titular, DNI, expediente, padrón o sector..."
+            value={busqueda}
+            onChange={(e) => {
+              setBusqueda(e.target.value);
+              setPaginaActual(1);
+            }}
+            className="w-full bg-transparent text-sm text-[var(--color-text-primary)] outline-none"
+          />
+        </div>
+
+        {/* Filtro por Sector */}
+        <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 w-full md:w-auto">
+          <Filter size={14} className="text-slate-400" />
+          <span>Sector:</span>
+          <select
+            value={filtroSector}
+            onChange={(e) => {
+              setFiltroSector(e.target.value);
+              setPaginaActual(1);
+            }}
+            className="bg-transparent font-bold text-indigo-950 outline-none cursor-pointer"
+          >
+            <option value="todos">Todos</option>
+            {sectores.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Filtro por Estado */}
+        <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 w-full md:w-auto">
+          <span>Estado:</span>
+          <select
+            value={filtroEstado}
+            onChange={(e) => {
+              setFiltroEstado(e.target.value);
+              setPaginaActual(1);
+            }}
+            className="bg-transparent font-bold text-indigo-950 outline-none cursor-pointer"
+          >
+            <option value="todos">Todos</option>
+            <option value="mora">Con Mora</option>
+            <option value="al_dia">Al Día</option>
+            <option value="completado">Completados</option>
+          </select>
+        </div>
       </div>
 
       {/* Tabla Agrupada por Titular / Contrato */}
@@ -119,16 +204,16 @@ export default function Tesoreria() {
         {loading ? (
           <div className="py-12 text-center text-sm text-slate-500">Cargando contratos...</div>
         ) : contratosPaginados.length === 0 ? (
-          <div className="py-12 text-center text-sm text-slate-500">No se encontraron expedientes.</div>
+          <div className="py-12 text-center text-sm text-slate-500">No se encontraron expedientes con los filtros aplicados.</div>
         ) : (
           <div className="overflow-x-auto w-full">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
                 <tr>
-                  <th className="py-3.5 px-5 font-semibold">Expediente</th>
+                  <th className="py-3.5 px-5 font-semibold">Expediente y Sector</th>
                   <th className="py-3.5 px-5 font-semibold">Titular / DNI</th>
                   <th className="py-3.5 px-5 font-semibold">Próximo Vencimiento</th>
-                  <th className="py-3.5 px-5 font-semibold">Monto Cuota</th>
+                  <th className="py-3.5 px-5 font-semibold">Monto Cuota / Total</th>
                   <th className="py-3.5 px-5 font-semibold">Progreso</th>
                   <th className="py-3.5 px-5 font-semibold text-center">Acción</th>
                 </tr>
@@ -157,13 +242,23 @@ export default function Tesoreria() {
 
                   return (
                     <tr key={c.id} className="hover:bg-slate-50 transition-colors">
+                      {/* Expediente y Sector */}
                       <td className="py-4 px-5 whitespace-nowrap">
                         <div className="font-bold text-indigo-950">{c.numero_expediente}</div>
-                        <span className="text-[11px] text-slate-400 font-mono block mt-0.5">
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded">
+                            {c.sector || 'General'}
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-mono">
+                            Mz: {c.manzana} | Parc: {c.parcela}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 block mt-0.5">
                           Alta: {fechaFormateada}
                         </span>
                       </td>
 
+                      {/* Titular */}
                       <td className="py-4 px-5">
                         <div className="font-semibold text-slate-900">{c.titular_nombre}</div>
                         <div className="text-xs text-slate-500">
@@ -171,35 +266,44 @@ export default function Tesoreria() {
                         </div>
                       </td>
 
-                     <td className="py-4 px-5">
-  {proximaCuota ? (
-    <div>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="font-semibold text-slate-800">
-          Cuota #{proximaCuota.numero_cuota} ({proximaCuota.periodo})
-        </span>
-        {/* Badge distintivo si la cuota a cobrar es el anticipo */}
-        {proximaCuota.numero_cuota === 1 && Number(c.monto_anticipo || 0) > 0 && (
-          <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-            Anticipo / Entrega
-          </span>
-        )}
-      </div>
-      <span className="block text-xs text-slate-500 mt-0.5">
-        Vence: {proximaCuota.fecha_vencimiento}
-      </span>
-    </div>
-  ) : (
-    <span className="text-emerald-700 font-semibold text-xs">Plan completado</span>
-  )}
-</td>
-
-                      <td className="py-4 px-5 font-semibold text-slate-900 whitespace-nowrap">
+                      {/* Próximo Vencimiento */}
+                      <td className="py-4 px-5">
                         {proximaCuota ? (
-                          `$${Number(proximaCuota.monto_base).toLocaleString('es-AR')}`
-                        ) : '-'}
+                          <div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-slate-800">
+                                Cuota #{proximaCuota.numero_cuota} ({proximaCuota.periodo})
+                              </span>
+                              {proximaCuota.numero_cuota === 1 && Number(c.monto_anticipo || 0) > 0 && (
+                                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                  Anticipo / Entrega
+                                </span>
+                              )}
+                            </div>
+                            <span className="block text-xs text-slate-500 mt-0.5">
+                              Vence: {proximaCuota.fecha_vencimiento}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-emerald-700 font-semibold text-xs">Plan completado</span>
+                        )}
                       </td>
 
+                      {/* Monto Cuota y Monto Total */}
+                      <td className="py-4 px-5 whitespace-nowrap">
+                        {proximaCuota ? (
+                          <div className="font-semibold text-slate-900">
+                            ${Number(proximaCuota.monto_base).toLocaleString('es-AR')}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 font-semibold">-</span>
+                        )}
+                        <span className="text-[11px] text-slate-500 block mt-0.5">
+                          Total Contrato: ${Number(c.monto_total || 0).toLocaleString('es-AR')}
+                        </span>
+                      </td>
+
+                      {/* Progreso */}
                       <td className="py-4 px-5">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-semibold text-slate-700">
@@ -213,6 +317,7 @@ export default function Tesoreria() {
                         </div>
                       </td>
 
+                      {/* Acción */}
                       <td className="py-4 px-5 text-center">
                         <button
                           onClick={() => setContratoSeleccionado(c)}

@@ -10,21 +10,24 @@ import {
   AlertTriangle,
   BellRing,
   CheckCheck,
-  Loader2
+  Loader2,
+  RefreshCw
 } from 'lucide-react';
 import { supabase } from '../../services/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { registrarMovimiento } from '../../utils/logger';
 import BotonVerPdf from '../common/BotonVerPdf';
+import RefinanciarPlanModal from './RefinanciarPlanModal';
 
-export default function DetalleTitularModal({ contrato, onClose }) {
+export default function DetalleTitularModal({ contrato, onClose, onActualizado }) {
   const { user } = useAuth();
   const { mostrarToast } = useToast();
   const [cuotas, setCuotas] = useState([]);
   const [avisosMora, setAvisosMora] = useState([]);
   const [loading, setLoading] = useState(true);
   const [guardandoAvisoId, setGuardandoAvisoId] = useState(null);
+  const [modalRefinanciarAbierto, setModalRefinanciarAbierto] = useState(false);
 
   useEffect(() => {
     if (contrato?.id) {
@@ -46,6 +49,7 @@ export default function DetalleTitularModal({ contrato, onClose }) {
             monto_base,
             aplica_ipc,
             monto_ajuste_ipc,
+            monto_recargo_mora,
             monto_total_exigible,
             mora_saldada,
             estado,
@@ -106,6 +110,7 @@ export default function DetalleTitularModal({ contrato, onClose }) {
 
       mostrarToast('Aviso registrado con fecha y hora correctamente.');
       cargarDatosFicha();
+      if (onActualizado) onActualizado();
     } catch (err) {
       mostrarToast(`Error al marcar aviso: ${err.message}`, 'error');
     } finally {
@@ -114,7 +119,7 @@ export default function DetalleTitularModal({ contrato, onClose }) {
   };
 
   const pagadas = cuotas.filter((c) => c.estado === 'pagada').length;
-  const pendientes = cuotas.length - pagadas;
+  const pendientes = cuotas.filter((c) => c.estado === 'pendiente').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs p-6 print:p-0">
@@ -141,10 +146,21 @@ export default function DetalleTitularModal({ contrato, onClose }) {
           </div>
 
           <div className="flex items-center gap-3">
-            <button onClick={() => window.print()} className="btn-icono text-xs py-2 px-3 flex items-center gap-2">
+            {/* Botón Reestructurar Plan (visible si hay cuotas pendientes) */}
+            {pendientes > 0 && (
+              <button 
+                onClick={() => setModalRefinanciarAbierto(true)} 
+                className="btn-icono text-xs py-2 px-3 flex items-center gap-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 cursor-pointer font-semibold"
+                title="Reestructurar cuotas pendientes en un nuevo plan"
+              >
+                <RefreshCw size={14} /> Reestructurar Plan
+              </button>
+            )}
+
+            <button onClick={() => window.print()} className="btn-icono text-xs py-2 px-3 flex items-center gap-2 cursor-pointer">
               <Printer size={16} /> Imprimir Ficha
             </button>
-            <button onClick={onClose} className="btn-icono text-xs p-2">
+            <button onClick={onClose} className="btn-icono text-xs p-2 cursor-pointer">
               <X size={18} />
             </button>
           </div>
@@ -218,10 +234,18 @@ export default function DetalleTitularModal({ contrato, onClose }) {
                   {cuotas.map((c) => {
                     const pagosAsociados = c.pagos || [];
                     const avisoCuota = avisosMora.find((a) => a.cuota_id === c.id);
+                    const estaRefinanciada = c.estado === 'refinanciada';
 
                     return (
-                      <tr key={c.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-800">{c.numero_cuota}</td>
+                      <tr 
+                        key={c.id} 
+                        className={`transition-colors ${
+                          estaRefinanciada ? 'bg-slate-100/70 text-slate-400' : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <td className="py-3 px-4 font-bold text-slate-800">
+                          {c.numero_cuota}
+                        </td>
                         <td className="py-3 px-4 text-slate-600 font-medium">{c.periodo}</td>
                         <td className="py-3 px-4 font-medium text-slate-700">{c.fecha_vencimiento}</td>
                         <td className="py-3 px-4 font-bold text-slate-900">
@@ -243,7 +267,11 @@ export default function DetalleTitularModal({ contrato, onClose }) {
                         </td>
 
                         <td className="py-3 px-4">
-                          {c.estado === 'pagada' ? (
+                          {estaRefinanciada ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-200 px-2.5 py-1 rounded-full">
+                              Refinanciada
+                            </span>
+                          ) : c.estado === 'pagada' ? (
                             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
                               <CheckCircle size={13} /> Pagada
                             </span>
@@ -295,7 +323,7 @@ export default function DetalleTitularModal({ contrato, onClose }) {
                                 <BotonVerPdf
                                   key={p.id}
                                   filePath={p.comprobante_url}
-                                  bucket="comprobantes-pago"
+                                  bucket="comprobantes-pagos"
                                   titulo={`Comprobante ${idx + 1} (${p.es_saldo_mora ? 'Mora' : 'Cuota'}) - Cuota #${c.numero_cuota}`}
                                 />
                               ))}
@@ -313,6 +341,19 @@ export default function DetalleTitularModal({ contrato, onClose }) {
           </div>
         </div>
       </div>
+
+      {/* Modal de Reestructuración */}
+      {modalRefinanciarAbierto && (
+        <RefinanciarPlanModal
+          contrato={contrato}
+          cuotas={cuotas}
+          onClose={() => setModalRefinanciarAbierto(false)}
+          onPlanActualizado={() => {
+            cargarDatosFicha();
+            if (onActualizado) onActualizado();
+          }}
+        />
+      )}
     </div>
   );
 }

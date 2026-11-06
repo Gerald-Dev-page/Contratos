@@ -50,21 +50,30 @@ export default function Inmobiliaria() {
     setLoading(true);
     try {
       const [resContratos, resAlertas] = await Promise.all([
-        supabase
-          .from('contratos')
-          .select('*, cuotas(*)')
-          .order('created_at', { ascending: false }),
+  supabase
+    .from('contratos')
+    .select('*, cuotas(*)')
+    .order('created_at', { ascending: false }),
 
-        supabase
-          .from('avisos_mora')
-          .select(`
-            *,
-            contratos (id, numero_expediente, titular_nombre, titular_telefono),
-            cuotas (numero_cuota, periodo)
-          `)
-          .eq('estado', 'pendiente_envio')
-          .order('fecha_reporte', { ascending: false })
-      ]);
+  supabase
+    .from('avisos_mora')
+    .select(`
+      *,
+      contratos (id, numero_expediente, titular_nombre, titular_telefono),
+      cuotas (
+        id,
+        numero_cuota,
+        periodo,
+        monto_base,
+        monto_recargo_mora,
+        monto_total_exigible,
+        recargo_mora_porcentaje,
+        fecha_vencimiento
+      )
+    `)
+    .eq('estado', 'pendiente_envio')
+    .order('fecha_reporte', { ascending: false })
+]);
 
       if (resContratos.error) throw resContratos.error;
       if (resAlertas.error) throw resAlertas.error;
@@ -297,57 +306,88 @@ export default function Inmobiliaria() {
       )}
 
       {/* 2. Alertas de Tesorería */}
-      {alertasMora.length > 0 && (
-        <div className="w-full rounded-xl border border-amber-300 bg-amber-50/80 p-4 shadow-xs space-y-2.5">
-          <div className="flex items-center gap-2 text-amber-900 font-semibold text-xs uppercase tracking-wider">
-            <BellRing size={16} className="text-amber-600 animate-pulse" />
-            <span>Alertas de Tesorería ({alertasMora.length})</span>
-          </div>
+{alertasMora.length > 0 && (
+  <div className="w-full rounded-xl border border-amber-300 bg-amber-50/80 p-4 shadow-xs space-y-2.5">
+    <div className="flex items-center gap-2 text-amber-900 font-semibold text-xs uppercase tracking-wider">
+      <BellRing size={16} className="text-amber-600 animate-pulse" />
+      <span>Alertas de Tesorería ({alertasMora.length})</span>
+    </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {alertasMora.map((a) => (
-              <div 
-                key={a.id} 
-                className="bg-white border border-amber-200 p-3.5 rounded-lg shadow-2xs flex flex-col justify-between gap-2.5"
-              >
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {alertasMora.map((a) => {
+        // Cálculo del recargo de mora (monto fijado o 5% sobre la base)
+        const montoBase = Number(a.cuotas?.monto_base || 0);
+        const porcentaje = Number(a.cuotas?.recargo_mora_porcentaje || 5);
+        const montoMora = Number(a.cuotas?.monto_recargo_mora || 0) > 0
+          ? Number(a.cuotas.monto_recargo_mora)
+          : (montoBase * (porcentaje / 100));
+
+        return (
+          <div 
+            key={a.id} 
+            className="bg-white border border-amber-200 p-3.5 rounded-lg shadow-2xs flex flex-col justify-between gap-2.5"
+          >
+            <div>
+              <div className="flex justify-between items-start">
+                <span className="font-semibold text-slate-900 text-xs">
+                  {a.contratos?.titular_nombre || 'Titular'}
+                </span>
+                <span className="text-[10px] font-semibold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                  Cuota #{a.cuotas?.numero_cuota}
+                </span>
+              </div>
+
+              {/* Teléfono */}
+              <p className="text-[11px] text-slate-600 mt-1 flex items-center gap-1">
+                <Phone size={12} className="text-slate-400" />
+                Tel: <span className="font-semibold">{a.contratos?.titular_telefono || 'Sin teléfono'}</span>
+              </p>
+
+              {/* Indicador de Mora Destacado */}
+              <div className="mt-2 bg-rose-50 border border-rose-200 p-2 rounded-md flex items-center justify-between">
                 <div>
-                  <div className="flex justify-between items-start">
-                    <span className="font-semibold text-slate-900 text-xs">
-                      {a.contratos?.titular_nombre || 'Titular'}
-                    </span>
-                    <span className="text-[10px] font-semibold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
-                      Cuota #{a.cuotas?.numero_cuota}
+                  <span className="text-[10px] font-bold text-rose-700 uppercase block">
+                    Vencida (+{porcentaje}%)
+                  </span>
+                  <span className="text-xs font-bold text-rose-900">
+                    +${montoMora.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                {montoBase > 0 && (
+                  <div className="text-right">
+                    <span className="text-[10px] text-slate-500 block">Total Exigible</span>
+                    <span className="text-xs font-bold text-slate-800">
+                      ${(montoBase + montoMora).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
-
-                  <p className="text-[11px] text-slate-600 mt-1 flex items-center gap-1">
-                    <Phone size={12} className="text-slate-400" />
-                    Tel: <span className="font-semibold">{a.contratos?.titular_telefono || 'Sin teléfono'}</span>
-                  </p>
-
-                  <p className="text-[11px] italic text-slate-600 bg-slate-50 p-2 rounded mt-1 border border-slate-100">
-                    "{a.mensaje_tesoreria}"
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between pt-1 border-t border-slate-100">
-                  <span className="text-[10px] text-slate-400">
-                    {new Date(a.fecha_reporte).toLocaleDateString('es-AR')}
-                  </span>
-                  <button
-                    onClick={() => handleMarcarComoAvisado(a)}
-                    disabled={marcandoAvisoId === a.id}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-semibold cursor-pointer"
-                  >
-                    {marcandoAvisoId === a.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCheck size={13} />}
-                    Marcar Avisado
-                  </button>
-                </div>
+                )}
               </div>
-            ))}
+
+              {/* Mensaje de Tesorería */}
+              <p className="text-[11px] italic text-slate-600 bg-slate-50 p-2 rounded mt-2 border border-slate-100">
+                "{a.mensaje_tesoreria}"
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between pt-1 border-t border-slate-100">
+              <span className="text-[10px] text-slate-400">
+                {new Date(a.fecha_reporte).toLocaleDateString('es-AR')}
+              </span>
+              <button
+                onClick={() => handleMarcarComoAvisado(a)}
+                disabled={marcandoAvisoId === a.id}
+                className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-semibold cursor-pointer"
+              >
+                {marcandoAvisoId === a.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCheck size={13} />}
+                Marcar Avisado
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })}
+    </div>
+  </div>
+)}
 
       {/* 3. Encabezado */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
